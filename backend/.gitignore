@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+.env
+*.log
+live_trader_state.json
+ai/models/backup_*
+ai/models/eski/
+.pytest_cache/
+.vscode/
+.idea/
+*.joblib
+!ai/models/*.joblib

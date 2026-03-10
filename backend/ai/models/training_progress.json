@@ -1,0 +1,224 @@
+{
+  "status": "done",
+  "progress": 100,
+  "detail": "\u2705 Tamamland\u0131! Accuracy: %48.64 | Signal F1: %50.16 | PF: 1.42",
+  "updated_at": "2026-03-10T00:10:06.000727",
+  "result": {
+    "accuracy": 48.64,
+    "signal_f1": 50.16,
+    "total_samples": 191683,
+    "train_samples": 130324,
+    "val_samples": 15332,
+    "cal_samples": 19165,
+    "test_samples": 26832,
+    "purge_gap_bars": 10,
+    "symbols_used": [
+      "BTCUSDT",
+      "ETHUSDT",
+      "BNBUSDT",
+      "SOLUSDT",
+      "XRPUSDT",
+      "ADAUSDT",
+      "DOGEUSDT",
+      "SHIBUSDT",
+      "AVAXUSDT",
+      "DOTUSDT",
+      "LINKUSDT",
+      "UNIUSDT",
+      "LTCUSDT",
+      "ATOMUSDT",
+      "ETCUSDT",
+      "BCHUSDT",
+      "ALGOUSDT",
+      "VETUSDT",
+      "FILUSDT",
+      "AAVEUSDT",
+      "GALAUSDT",
+      "SANDUSDT",
+      "MANAUSDT",
+      "NEARUSDT",
+      "RUNEUSDT",
+      "EGLDUSDT",
+      "CRVUSDT",
+      "CHZUSDT",
+      "AXSUSDT",
+      "THETAUSDT",
+      "ENJUSDT",
+      "SNXUSDT",
+      "GRTUSDT",
+      "COMPUSDT",
+      "YFIUSDT",
+      "ZILUSDT",
+      "BATUSDT",
+      "ONTUSDT",
+      "QTUMUSDT",
+      "NEOUSDT",
+      "XTZUSDT",
+      "DASHUSDT",
+      "ZECUSDT",
+      "XLMUSDT",
+      "TRXUSDT",
+      "IOTAUSDT",
+      "KSMUSDT",
+      "SUSHIUSDT",
+      "1INCHUSDT",
+      "ROSEUSDT",
+      "CELOUSDT",
+      "KAVAUSDT",
+      "RAYUSDT",
+      "LRCUSDT",
+      "BANDUSDT",
+      "KNCUSDT",
+      "RLCUSDT",
+      "CTKUSDT",
+      "STXUSDT",
+      "TRBUSDT",
+      "MDTUSDT",
+      "INJUSDT",
+      "TIAUSDT",
+      "WLDUSDT",
+      "JTOUSDT",
+      "ORDIUSDT"
+    ],
+    "symbols_count": 66,
+    "symbols_skipped": [
+      "MATICUSDT",
+      "FTMUSDT",
+      "MKRUSDT",
+      "WAVESUSDT",
+      "OMGUSDT",
+      "EOSUSDT",
+      "XMRUSDT",
+      "OCEANUSDT",
+      "SRMUSDT",
+      "RENUSDT",
+      "BALUSDT"
+    ],
+    "timeframe": "1m",
+    "feature_count": 55,
+    "features_pruned": 10,
+    "hold_penalty": 0.816,
+    "financial_metrics": {
+      "n_signals": 26832,
+      "n_long": 19107,
+      "n_short": 7725,
+      "n_hold": 0,
+      "correct_long": 8849,
+      "correct_short": 4203,
+      "wrong_long": 10258,
+      "wrong_short": 3522,
+      "signal_accuracy": 48.64,
+      "gross_profit_score": 23483.1584,
+      "gross_loss_score": 16547.024,
+      "net_pnl_score": 6936.1344,
+      "profit_factor": 1.42,
+      "avg_long_conf": 0.479,
+      "avg_short_conf": 0.516
+    },
+    "best_params": {
+      "n_estimators": 768,
+      "learning_rate": 0.06305821317886534,
+      "max_depth": 10,
+      "subsample": 0.8144979269271136,
+      "colsample_bytree": 0.5509358128808441,
+      "min_child_weight": 3,
+      "gamma": 0.5459817356485646,
+      "reg_alpha": 0.006020727947177567,
+      "reg_lambda": 0.006774235251840452
+    },
+    "optuna_used": true,
+    "calibrated": true,
+    "calibration_brier": {
+      "SHORT": 0.2403,
+      "HOLD": 0.1061,
+      "LONG": 0.2401
+    },
+    "tp_mult": 1.8,
+    "sl_mult": 1.2,
+    "lookahead": 10,
+    "class_report": {
+      "SHORT": {
+        "precision": 0.544,
+        "recall": 0.349,
+        "f1": 0.425,
+        "support": 12041
+      },
+      "HOLD": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 3270
+      },
+      "LONG": {
+        "precision": 0.463,
+        "recall": 0.768,
+        "f1": 0.578,
+        "support": 11521
+      }
+    },
+    "top_features": [
+      {
+        "feature": "bos_bullish",
+        "importance": 0.0676
+      },
+      {
+        "feature": "bos_bearish",
+        "importance": 0.0584
+      },
+      {
+        "feature": "ema21_above_50",
+        "importance": 0.0321
+      },
+      {
+        "feature": "vol_regime",
+        "importance": 0.0273
+      },
+      {
+        "feature": "hour",
+        "importance": 0.0269
+      },
+      {
+        "feature": "is_weekend",
+        "importance": 0.0246
+      },
+      {
+        "feature": "ema9_above_21",
+        "importance": 0.0191
+      },
+      {
+        "feature": "atr_pct",
+        "importance": 0.0189
+      },
+      {
+        "feature": "close_vs_high10",
+        "importance": 0.0184
+      },
+      {
+        "feature": "rsi",
+        "importance": 0.018
+      },
+      {
+        "feature": "realized_vol_30",
+        "importance": 0.018
+      },
+      {
+        "feature": "close_vs_low10",
+        "importance": 0.018
+      },
+      {
+        "feature": "lower_wick",
+        "importance": 0.0178
+      },
+      {
+        "feature": "macd",
+        "importance": 0.0176
+      },
+      {
+        "feature": "close_vs_low20",
+        "importance": 0.0176
+      }
+    ],
+    "model_path": "D:\\SmartTrade\\backend\\ai\\models\\xgb_1m.joblib",
+    "trained_at": "2026-03-10T00:10:06.000727"
+  }
+}
