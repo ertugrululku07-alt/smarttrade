@@ -257,38 +257,67 @@ class LivePaperTrader:
                 sym_longs = [t for t in self.open_trades if t['symbol'] == symbol and t['side'] == 'LONG']
                 sym_shorts = [t for t in self.open_trades if t['symbol'] == symbol and t['side'] == 'SHORT']
                 
-                # --- 1. TP ve SL KONTROLU ---
-                is_volatile = 'BTC' not in symbol
-                
-                tp_pct = 0.015 if is_volatile else 0.007   # BTC: 0.7%, ALTs: 1.5%
-                sl_pct = 0.08 if is_volatile else 0.05
-                dca_spacing_pct = 0.025 if is_volatile else 0.005  # BTC: 0.5%, ALTs: 2.5%
-
-                if len(sym_longs) > 0:
-                    avg_entry = sum(t['entry_price'] * t['qty'] for t in sym_longs) / sum(t['qty'] for t in sym_longs)
-                    profit_pct = (c - avg_entry) / avg_entry
+                # --- 1. TP ve SL KONTROLU (AI Senkronizasyonlu & Trailing Stop) ---
+                for t in (sym_longs + sym_shorts):
+                    side = t['side']
+                    entry = t['entry_price']
+                    current_sl = t.get('sl_price', 0)
+                    target_tp = t.get('tp_price', 0)
                     
-                    if profit_pct >= tp_pct or (profit_pct > 0 and last_row['rsi'] > 70):
-                        self._close_all(sym_longs, symbol, c, "DCA_TP_LONG")
-                        sym_longs = []
-                        
-                    # Positional Stop Loss
-                    elif profit_pct <= -sl_pct:
-                        self._close_all(sym_longs, symbol, c, "StopLoss_LONG")
-                        sym_longs = []
+                    # Eğer AI fiyatları yoksa fallback yüzdelerini hesapla (Eski işlemler için)
+                    if current_sl == 0 or target_tp == 0:
+                        is_volatile = 'BTC' not in symbol
+                        tp_fallback = 0.015 if is_volatile else 0.007
+                        sl_fallback = 0.04 if is_volatile else 0.02 # Tightened fallback
+                        if side == 'LONG':
+                            target_tp = entry * (1 + tp_fallback)
+                            current_sl = entry * (1 - sl_fallback)
+                        else:
+                            target_tp = entry * (1 - tp_fallback)
+                            current_sl = entry * (1 + sl_fallback)
+                        t['sl_price'] = current_sl
+                        t['tp_price'] = target_tp
 
-                if len(sym_shorts) > 0:
-                    avg_entry = sum(t['entry_price'] * t['qty'] for t in sym_shorts) / sum(t['qty'] for t in sym_shorts)
-                    profit_pct = (avg_entry - c) / avg_entry
+                    # Profit/Loss Calculation
+                    profit_pct = (c - entry) / entry if side == 'LONG' else (entry - c) / entry
                     
-                    if profit_pct >= tp_pct or (profit_pct > 0 and last_row['rsi'] < 30):
-                        self._close_all(sym_shorts, symbol, c, "DCA_TP_SHORT")
-                        sym_shorts = []
+                    # 1. Take Profit (Hard Exit)
+                    hit_tp = (side == 'LONG' and c >= target_tp) or (side == 'SHORT' and c <= target_tp)
+                    if hit_tp:
+                        self._close_all([t], symbol, c, f"TP_{side}_AI")
+                        continue
+
+                    # 2. Stop Loss (Protective Exit)
+                    hit_sl = (side == 'LONG' and c <= current_sl) or (side == 'SHORT' and c >= current_sl)
+                    if hit_sl:
+                        self._close_all([t], symbol, c, f"SL_{side}_AI")
+                        continue
+
+                    # 3. Breakeven logic (Kâr %1'i geçerse stop'u girişe çek)
+                    if profit_pct >= 0.01 and t.get('be_active') is not True:
+                        t['sl_price'] = entry # Stop can seviyesine çekildi
+                        t['be_active'] = True
+                        self.log(f"🛡️ BREAKEVEN active for {symbol} {side} @ {entry:.4f}")
+
+                    # 4. Trailing Stop logic (Kâr %1.5'i geçerse takip et)
+                    if profit_pct >= 0.015:
+                        # ATR bazlı takip (basit: kârın %50'sini koru)
+                        trail_distance = (c - entry) * 0.5 if side == 'LONG' else (entry - c) * 0.5
+                        new_tsl = c - trail_distance if side == 'LONG' else c + trail_distance
                         
-                    # Positional Stop Loss
-                    elif profit_pct <= -sl_pct:
-                        self._close_all(sym_shorts, symbol, c, "StopLoss_SHORT")
-                        sym_shorts = []
+                        # Sadece stop'u daha iyiye taşıyorsak güncelle
+                        if side == 'LONG' and new_tsl > t['sl_price']:
+                            t['sl_price'] = new_tsl
+                            # self.log(f"📈 TSL update {symbol}: {new_tsl:.4f}")
+                        elif side == 'SHORT' and new_tsl < t['sl_price']:
+                            t['sl_price'] = new_tsl
+                            # self.log(f"📉 TSL update {symbol}: {new_tsl:.4f}")
+
+                    # RSI Overbought/Oversold Guard (Quick Exit)
+                    if side == 'LONG' and last_row['rsi'] > 75 and profit_pct > 0.005:
+                        self._close_all([t], symbol, c, "RSI_OB_EXIT")
+                    elif side == 'SHORT' and last_row['rsi'] < 25 and profit_pct > 0.005:
+                        self._close_all([t], symbol, c, "RSI_OS_EXIT")
 
                 # --- 2. GİRİŞ (SİNYAL) KONTROLU ---
                 can_open_new = len(self.open_trades) < self.max_open_trades_limit
