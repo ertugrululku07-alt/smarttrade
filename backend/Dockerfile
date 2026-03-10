@@ -25,5 +25,5 @@ COPY . .
 # Create data directory for volume persistence
 RUN mkdir -p /app/data
 
-# Start application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Start application (using Railway's dynamic PORT)
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
