@@ -6,6 +6,7 @@ __pycache__/
 env/
 venv/
 .venv/
+*_old/
 include/
 bin/
 lib/
@@ -15,8 +16,8 @@ local/
 .git/
 .gitignore
 *.log
+*.txt
 live_trader_state.json
 ai/models/backup_*
 ai/models/eski/
-C:\Users\Home\.gemini\*
 .env
