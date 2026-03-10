@@ -16,7 +16,11 @@ from contextlib import asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     print("🚀 SmartTrade AI Platform Başlıyor...")
-    models.Base.metadata.create_all(bind=engine)
+    try:
+        models.Base.metadata.create_all(bind=engine)
+        print("✅ Veritabanı tabloları hazır.")
+    except Exception as e:
+        print(f"❌ Veritabanı başlatma hatası (ama uygulama devam ediyor): {e}")
     yield
     # Shutdown
     print("🛑 SmartTrade AI Platform Kapanıyor...")
