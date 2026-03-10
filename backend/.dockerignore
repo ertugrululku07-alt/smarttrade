@@ -16,7 +16,6 @@ local/
 .git/
 .gitignore
 *.log
-*.txt
 live_trader_state.json
 ai/models/backup_*
 ai/models/eski/
