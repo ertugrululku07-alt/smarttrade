@@ -8,8 +8,7 @@ from backtest.router import router as backtest_router
 from live.router import router as live_router
 from ai.router_ai import router as ai_router
 
-# Create all database tables
-models.Base.metadata.create_all(bind=engine)
+# Create all database tables (moved to lifespan)
 
 from contextlib import asynccontextmanager
 
@@ -17,6 +16,7 @@ from contextlib import asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     print("🚀 SmartTrade AI Platform Başlıyor...")
+    models.Base.metadata.create_all(bind=engine)
     yield
     # Shutdown
     print("🛑 SmartTrade AI Platform Kapanıyor...")
