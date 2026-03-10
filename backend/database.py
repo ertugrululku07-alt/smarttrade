@@ -6,15 +6,27 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@localhost:5434/smarttrade")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-# SQLAlchemy requires postgresql:// instead of postgres:// which Railway might provide
-if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
+# Fallback/Default handling
+if not DATABASE_URL:
+    print("⚠️ DATABASE_URL not found! Using local fallback.")
+    DATABASE_URL = "postgresql://user:password@localhost:5434/smarttrade"
+
+# SQLAlchemy requires postgresql:// instead of postgres:// which Railway provides
+if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-print(f"📡 Database connection initialized (URL length: {len(DATABASE_URL) if DATABASE_URL else 0})")
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+print(f"📡 Attempting to initialize DB engine (URL prefix: {DATABASE_URL.split(':')[0]})")
+
+try:
+    engine = create_engine(DATABASE_URL)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+except Exception as e:
+    print(f"🚨 CRITICAL: Engine creation failed: {e}")
+    # Create a dummy engine to prevent import errors, allowing main.py to handle the failure gracefully
+    engine = create_engine("sqlite:///:memory:")
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
 
