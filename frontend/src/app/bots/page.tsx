@@ -1,8 +1,9 @@
 "use client"
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { getApiUrl } from '@/utils/api';
 
-const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const API = getApiUrl();
 
 const STRATEGY_LABELS: Record<string, string> = {
     quant_grid: 'RSI Grid Scalper',
@@ -146,7 +147,7 @@ export default function BotsPage() {
 
     const fetchConfigs = async () => {
         try {
-            const res = await fetch(`${API}/live/bots/configs`);
+            const res = await fetch(getApiUrl('/live/bots/configs'));
             if (res.ok) {
                 const data = await res.json();
                 if (data.success && data.configs) {
@@ -159,8 +160,8 @@ export default function BotsPage() {
     const fetchAIExtras = async () => {
         try {
             const [sRes, eRes] = await Promise.all([
-                fetch(`${API}/ai/xgboost/scheduler/status`),
-                fetch(`${API}/ai/xgboost/ensemble/status`)
+                fetch(getApiUrl('/ai/xgboost/scheduler/status')),
+                fetch(getApiUrl('/ai/xgboost/ensemble/status'))
             ]);
             if (sRes.ok) setSchedStatus(await sRes.json());
             if (eRes.ok) setEnsembStatus(await eRes.json());
@@ -171,7 +172,7 @@ export default function BotsPage() {
         fetchConfigs();
         fetchAIExtras();
         // Check training status on mount as well so we don't lose state if we refresh
-        fetch(`${API}/ai/xgboost/status`).then(res => res.json()).then(resData => {
+        fetch(getApiUrl('/ai/xgboost/status')).then(res => res.json()).then(resData => {
             if (resData.success && resData.data) {
                 const data = resData.data;
                 if (data.status === 'fetching' || data.status === 'training') {
@@ -186,7 +187,7 @@ export default function BotsPage() {
         let iv: NodeJS.Timeout;
         const poll = async () => {
             try {
-                const res = await fetch(`${API}/ai/xgboost/status`);
+                const res = await fetch(getApiUrl('/ai/xgboost/status'));
                 if (res.ok) {
                     const resData = await res.json();
                     if (resData.success && resData.data) {
@@ -215,7 +216,7 @@ export default function BotsPage() {
 
     const handleStartTraining = async () => {
         try {
-            const endpoint = trainTf === 'all' ? `${API}/ai/xgboost/director/train-all` : `${API}/ai/xgboost/train`;
+            const endpoint = trainTf === 'all' ? getApiUrl('/ai/xgboost/director/train-all') : getApiUrl('/ai/xgboost/train');
             const payload = trainTf === 'all'
                 ? { timeframe: '15m', limit: trainLimit } // Backend ignores tf for train-all but requires it in schema
                 : { timeframe: trainTf, limit: trainLimit };
@@ -233,7 +234,7 @@ export default function BotsPage() {
 
     const handleResetTraining = async () => {
         try {
-            const res = await fetch(`${API}/ai/xgboost/reset`, { method: 'POST' });
+            const res = await fetch(getApiUrl('/ai/xgboost/reset'), { method: 'POST' });
             if (res.ok) {
                 setTrainStatus({ status: 'idle', progress: 0, detail: 'Eğitim durumu sıfırlandı.' });
             }
@@ -242,7 +243,7 @@ export default function BotsPage() {
 
     const toggleScheduler = async () => {
         const action = schedStatus.status === 'running' ? 'stop' : 'start';
-        await fetch(`${API}/ai/xgboost/scheduler/${action}`, { method: 'POST' });
+        await fetch(getApiUrl(`/ai/xgboost/scheduler/${action}`), { method: 'POST' });
         setTimeout(fetchAIExtras, 1000);
     };
 
@@ -264,7 +265,7 @@ export default function BotsPage() {
         if (!settingsOpen) return;
         try {
             const payload = { ...settingsForm, risk_pct: settingsForm.risk_pct / 100.0 };
-            const res = await fetch(`${API}/live/bots/${settingsOpen.id}/config`, {
+            const res = await fetch(getApiUrl(`/live/bots/${settingsOpen.id}/config`), {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -279,7 +280,7 @@ export default function BotsPage() {
 
     const fetchStatus = useCallback(async () => {
         try {
-            const res = await fetch(`${API}/live/bots/status`);
+            const res = await fetch(getApiUrl('/live/bots/status'));
             if (!res.ok) return;
             const data = await res.json();
             setBots(data.bots || []);
@@ -295,14 +296,14 @@ export default function BotsPage() {
         return () => clearInterval(iv);
     }, [fetchStatus]);
 
-    const handleStartAll = async () => { await fetch(`${API}/live/bots/start-all`, { method: 'POST' }); setTimeout(fetchStatus, 1000); };
-    const handleStopAll = async () => { await fetch(`${API}/live/bots/stop-all`, { method: 'POST' }); setTimeout(fetchStatus, 1000); };
+    const handleStartAll = async () => { await fetch(getApiUrl('/live/bots/start-all'), { method: 'POST' }); setTimeout(fetchStatus, 1000); };
+    const handleStopAll = async () => { await fetch(getApiUrl('/live/bots/stop-all'), { method: 'POST' }); setTimeout(fetchStatus, 1000); };
     const handleToggle = async (bot: BotStatus) => {
         const action = bot.status === 'running' ? 'stop' : 'start';
-        await fetch(`${API}/live/bots/${bot.id}/${action}`, { method: 'POST' });
+        await fetch(getApiUrl(`/live/bots/${bot.id}/${action}`), { method: 'POST' });
         setTimeout(fetchStatus, 800);
     };
-    const handleReset = async (id: string) => { await fetch(`${API}/live/bots/${id}/reset`, { method: 'POST' }); setTimeout(fetchStatus, 800); };
+    const handleReset = async (id: string) => { await fetch(getApiUrl(`/live/bots/${id}/reset`), { method: 'POST' }); setTimeout(fetchStatus, 800); };
 
     const handleResetAll = async () => {
         const balStr = prompt("Tüm botları sıfırlamak istediğinize emin misiniz?\n\n(Yeni Başlangıç Bakiyesini girebilir, veya boş bırakarak mevcut bakiyeyle sıfırlayabilirsiniz)", "1000");
@@ -312,7 +313,7 @@ export default function BotsPage() {
         const payload = !isNaN(initial_balance) && initial_balance > 0 ? { initial_balance } : {};
 
         try {
-            const res = await fetch(`${API}/live/bots/reset-all`, {
+            const res = await fetch(getApiUrl('/live/bots/reset-all'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)

@@ -1,6 +1,7 @@
 "use client"
 
 import React, { useState } from 'react';
+import { getApiUrl } from '@/utils/api';
 
 const AVAILABLE_BLOCKS = [
     { id: 'rsi', type: 'indicator', title: 'RSI', desc: 'Relative Strength Index', color: '#4f9eff' },
@@ -70,7 +71,7 @@ export default function BotBuilderPage() {
         setIsRunningBacktest(true);
         setBacktestResult(null);
         try {
-            const res = await fetch('http://localhost:8000/backtest/run', {
+            const res = await fetch(getApiUrl('/backtest/run'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({

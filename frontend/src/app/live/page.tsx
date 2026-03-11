@@ -1,6 +1,7 @@
 "use client"
 
 import React, { useState, useEffect } from 'react';
+import { getApiUrl } from '@/utils/api';
 
 export default function LiveTradingPage() {
     const [statusData, setStatusData] = useState<any>(null);
@@ -12,7 +13,7 @@ export default function LiveTradingPage() {
 
     const fetchStatus = async () => {
         try {
-            const res = await fetch("http://localhost:8000/live/quant/status");
+            const res = await fetch(getApiUrl("/live/quant/status"));
             if (res.ok) {
                 const data = await res.json();
                 setStatusData(data);
@@ -36,7 +37,7 @@ export default function LiveTradingPage() {
     const handleAction = async (action: 'start' | 'stop') => {
         setActionLoading(true);
         try {
-            const res = await fetch(`http://localhost:8000/live/quant/${action}`, { method: 'POST' });
+            const res = await fetch(getApiUrl(`/live/quant/${action}`), { method: 'POST' });
             if (res.ok) {
                 await fetchStatus();
             }
@@ -50,7 +51,7 @@ export default function LiveTradingPage() {
     const handleCloseTrade = async (tradeId: string) => {
         setClosingTradeId(tradeId);
         try {
-            const res = await fetch(`http://localhost:8000/live/quant/close-trade/${tradeId}`, { method: 'POST' });
+            const res = await fetch(getApiUrl(`/live/quant/close-trade/${tradeId}`), { method: 'POST' });
             if (res.ok) {
                 await fetchStatus();
             } else {
@@ -69,7 +70,7 @@ export default function LiveTradingPage() {
         if (maxOpenTrades === null || maxOpenTrades < 1) return;
         setSavingSettings(true);
         try {
-            const res = await fetch('http://localhost:8000/live/quant/settings', {
+            const res = await fetch(getApiUrl('/live/quant/settings'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ max_open_trades: maxOpenTrades })

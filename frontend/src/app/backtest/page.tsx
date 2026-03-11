@@ -1,6 +1,7 @@
 "use client"
 
 import React, { useState } from 'react';
+import { getApiUrl } from '@/utils/api';
 
 const SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'AVAX/USDT', 'LINK/USDT'];
 const TIMEFRAMES = ['5m', '15m', '1h', '4h', '1d'];
@@ -61,7 +62,7 @@ export default function BacktestPage() {
     const [adaptiveRes, setARes] = useState<any>(null);
 
     const api = async (path: string, method = 'POST', body?: any) => {
-        const res = await fetch(`http://localhost:8000${path}`, {
+        const res = await fetch(getApiUrl(path), {
             method,
             headers: body ? { 'Content-Type': 'application/json' } : {},
             body: body ? JSON.stringify(body) : undefined,
