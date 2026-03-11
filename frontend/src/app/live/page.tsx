@@ -3,6 +3,60 @@
 import React, { useState, useEffect } from 'react';
 import { getApiUrl } from '@/utils/api';
 
+// --- Premium animated PnL Chart Component ---
+const PnLChart = ({ data }: { data: any[] }) => {
+    if (!data || data.length < 2) return null;
+
+    const values = data.map(d => d.pct);
+    const min = Math.min(...values, -0.5); // At least show some range
+    const max = Math.max(...values, 0.5);
+    const range = max - min;
+    
+    // SVG Coordinates
+    const width = 120;
+    const height = 40;
+    const padding = 2;
+    
+    const points = data.map((d, i) => {
+        const x = (i / (data.length - 1)) * width;
+        const y = height - ((d.pct - min) / range) * (height - padding * 2) - padding;
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+
+    const isProfit = data[data.length - 1].pct >= 0;
+    const color = isProfit ? '#00d8a8' : '#f43f5e';
+    const gradientId = `grad-${Math.random().toString(36).substr(2, 9)}`;
+
+    return (
+        <div style={{ position: 'relative', width: width, height: height, marginLeft: 12 }}>
+            <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
+                <defs>
+                    <linearGradient id={gradientId} x1="0%" y1="0%" x2="0%" y2="100%">
+                        <stop offset="0%" stopColor={color} stopOpacity="0.2" />
+                        <stop offset="100%" stopColor={color} stopOpacity="0" />
+                    </linearGradient>
+                </defs>
+                {/* Area under curve */}
+                <path
+                    d={`M 0,${height} L ${points} L ${width},${height} Z`}
+                    fill={`url(#${gradientId})`}
+                    style={{ transition: 'all 0.3s ease' }}
+                />
+                {/* Main line */}
+                <polyline
+                    fill="none"
+                    stroke={color}
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    points={points}
+                    style={{ transition: 'all 0.3s ease' }}
+                />
+            </svg>
+        </div>
+    );
+};
+
 export default function LiveTradingPage() {
     const [statusData, setStatusData] = useState<any>(null);
     const [loading, setLoading] = useState(true);
@@ -229,6 +283,12 @@ export default function LiveTradingPage() {
                                                     <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
                                                         Entry: ${trade.entry} · Time: {trade.entry_time}
                                                     </div>
+                                                    <div style={{ display: 'flex', alignItems: 'center', marginTop: 8 }}>
+                                                        <div style={{ fontSize: '10px', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.05)', padding: '2px 6px', borderRadius: '4px' }}>
+                                                             Score: {trade.soft_score}/5 · {trade.entry_type}
+                                                        </div>
+                                                        <PnLChart data={trade.pnl_history} />
+                                                    </div>
                                                 </div>
                                                 <div style={{ textAlign: 'right' }}>
                                                     <div style={{ fontSize: '15px', fontWeight: 700, color: trade.pnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)' }}>
@@ -305,6 +365,12 @@ export default function LiveTradingPage() {
                                                 </div>
                                                 <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
                                                     {t.entry_time} → {t.exit_time}
+                                                </div>
+                                                <div style={{ display: 'flex', alignItems: 'center', marginTop: 4 }}>
+                                                    <div style={{ fontSize: '9px', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.03)', padding: '1px 5px', borderRadius: '3px' }}>
+                                                         Score: {t.soft_score}/5 · {t.entry_type}
+                                                    </div>
+                                                    <PnLChart data={t.pnl_history} />
                                                 </div>
                                             </div>
                                             <div style={{ textAlign: 'right' }}>
