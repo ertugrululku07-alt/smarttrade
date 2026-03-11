@@ -22,43 +22,41 @@ class MetaPredictor:
     Eğitilmiş meta-modelleri yükler ve prediction yapar.
     """
 
-    def __init__(self, timeframe: str = "15m"):
-        self.timeframe = timeframe
-        self.models: Dict[str, Dict] = {}
+    def __init__(self, timeframes: list = ["15m", "1h"]):
+        self.timeframes = timeframes
+        self.models: Dict[str, Dict] = {} # Key format: "regime_timeframe"
         self._load_models()
 
     def _load_models(self):
-        """Tüm rejim modellerini yükle"""
+        """Tüm rejim ve timeframe modellerini yükle"""
         loaded = 0
-        for regime in Regime:
-            model_path = os.path.join(
-                MODEL_DIR, f"meta_{regime.value}_{self.timeframe}.joblib"
-            )
-            if os.path.exists(model_path):
-                try:
-                    # model, features, meta are expected in the joblib package
-                    model_data = joblib.load(model_path)
-                    # Check if it's the 3-element tuple we expect
-                    if isinstance(model_data, tuple) and len(model_data) == 3:
-                        model, features, meta = model_data
-                    else:
-                        # Fallback if structure is different
-                        model = model_data
-                        features = getattr(model, "feature_names_in_", [])
-                        meta = {}
+        for tf in self.timeframes:
+            for regime in Regime:
+                model_path = os.path.join(
+                    MODEL_DIR, f"meta_{regime.value}_{tf}.joblib"
+                )
+                if os.path.exists(model_path):
+                    try:
+                        model_data = joblib.load(model_path)
+                        if isinstance(model_data, tuple) and len(model_data) == 3:
+                            model, features, meta = model_data
+                        else:
+                            model = model_data
+                            features = getattr(model, "feature_names_in_", [])
+                            meta = {}
 
-                    self.models[regime.value] = {
-                        'model': model,
-                        'features': features,
-                        'meta': meta,
-                        'threshold': max(0.60, meta.get('best_threshold', 0.60)),
-                    }
-                    loaded += 1
-                except Exception as e:
-                    print(f"  ERROR: Meta-model yuklenemedi ({regime.value}): {e}")
+                        key = f"{regime.value}_{tf}"
+                        self.models[key] = {
+                            'model': model,
+                            'features': features,
+                            'meta': meta,
+                            'threshold': max(0.60, meta.get('best_threshold', 0.60)),
+                        }
+                        loaded += 1
+                    except Exception as e:
+                        print(f"  ERROR: Meta-model yuklenemedi ({regime.value} - {tf}): {e}")
 
-        print(f"  [MODEL] MetaPredictor: {loaded}/{len(Regime)} model yuklendi "
-              f"({self.timeframe})")
+        print(f"  [MODEL] MetaPredictor: {loaded} model yuklendi ({', '.join(self.timeframes)})")
 
     def predict(
         self,
@@ -66,21 +64,19 @@ class MetaPredictor:
         regime: Regime,
         signal_direction: str,
         signal_confidence: float,
-    ) -> Tuple[float, bool, float]:
+        timeframe: str = "1h"
+    ) -> Tuple[float, bool, float, str]:
         """
-        Meta-model prediction.
-
-        v1.1: Feature mismatch düzeltildi
-          - Eksik feature'lar 0.0 ile doldurulur
-          - Feature sırası modelin beklediği sırada tutulur
+        Meta-model prediction with timeframe awareness.
         """
         regime_val = regime.value if isinstance(regime, Regime) else regime
+        key = f"{regime_val}_{timeframe}"
 
-        if regime_val not in self.models:
+        if key not in self.models:
             fallback_conf = signal_confidence * 0.80
-            return fallback_conf, fallback_conf > 0.55, 0.55
+            return fallback_conf, fallback_conf > 0.55, 0.55, f"No model for {key}"
 
-        model_info = self.models[regime_val]
+        model_info = self.models[key]
         model = model_info['model']
         feature_cols = model_info['features']
         threshold = model_info['threshold']
@@ -126,12 +122,12 @@ class MetaPredictor:
 
             should_trade = meta_conf >= threshold
 
-            return meta_conf, should_trade, threshold
+            return meta_conf, should_trade, threshold, "Success"
 
         except Exception as e:
             print(f"  ERROR: MetaPredictor hata ({regime_val}): {e}")
             fallback_conf = signal_confidence * 0.70
-            return fallback_conf, fallback_conf > 0.55, 0.55
+            return fallback_conf, fallback_conf > 0.55, 0.55, f"Error: {str(e)}"
 
     def get_regime_stats(self) -> Dict:
         """Yüklü modellerin istatistikleri"""

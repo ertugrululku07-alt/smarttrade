@@ -1,6 +1,7 @@
 "use client"
 
 import React, { useState } from 'react';
+import { getApiUrl } from '@/utils/api';
 import { SortableBlock } from './SortableBlock';
 import { DraggableItem } from './DraggableItem';
 
@@ -57,7 +58,7 @@ export default function BotBuilder() {
         strategy: activeBlocks.map(block => ({ id: block.id, type: block.type, title: block.title }))
       };
 
-      const response = await fetch("http://localhost:8000/backtest/run", {
+      const response = await fetch(getApiUrl("/backtest/run"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(reqBody)
@@ -98,7 +99,7 @@ export default function BotBuilder() {
         strategy: activeBlocks.map(block => ({ id: block.id, type: block.type, title: block.title }))
       };
 
-      const response = await fetch("http://localhost:8000/backtest/optimize", {
+      const response = await fetch(getApiUrl("/backtest/optimize"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(reqBody)

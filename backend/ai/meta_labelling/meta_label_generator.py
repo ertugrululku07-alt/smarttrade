@@ -51,7 +51,7 @@ class MetaLabelGenerator:
         lookahead: int = 16,
         trail_activation: float = 0.6,
         regime_lookback: int = 50,
-        timeframe: str = "15m",
+        timeframe: str = "1h",
     ):
         self.lookahead = lookahead
         self.trail_activation = trail_activation

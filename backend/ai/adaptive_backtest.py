@@ -134,13 +134,15 @@ class AdaptiveBacktest:
         self.max_concurrent = max_concurrent_trades
         self.use_meta_filter = use_meta_filter
 
-        # ── v1.4: AdaptiveEngine-v1.4 ───────────────────────
-        self.engine = AdaptiveEngine(timeframe=timeframe)
+        # ── v1.5: Hybrid Engine Design ──────────────────────
+        self.engine = AdaptiveEngine(primary_tf=timeframe, secondary_tf="15m")
         if not use_meta_filter:
             self.engine.meta_predictor = None
+        
+        # Hybrid modu (Backtest bazlı)
+        self.is_hybrid = False
 
         # TF bazlı lookahead
-        self.lookahead = self._get_lookahead(timeframe)
         self.lookahead = self._get_lookahead(timeframe)
 
         # ── v1.3: Debug sayaçları ────────────────────────────
@@ -164,6 +166,7 @@ class AdaptiveBacktest:
     def run(
         self,
         df: pd.DataFrame,
+        df_secondary: Optional[pd.DataFrame] = None,
         symbol: str = "UNKNOWN",
         verbose: bool = False,
     ) -> BacktestResult:
@@ -175,6 +178,7 @@ class AdaptiveBacktest:
         highs = df['high'].values
         lows = df['low'].values
         atrs = df['atr'].values
+        timestamps = df.index.values
 
         result = BacktestResult()
         result.equity_curve = [self.initial_capital]
@@ -244,24 +248,26 @@ class AdaptiveBacktest:
             if len(open_trades) >= self.max_concurrent:
                 continue
 
-            # ── v1.4: Karar Mekanizmasını Engine'e Bırak ──────
-            decision = self.engine.decide(df.iloc[:i + 1])
+            # ── v1.5: Hybrid Decision logic ───────────────────
+            df_sec_chunk = None
+            if df_secondary is not None:
+                ts = pd.Timestamp(timestamps[i])
+                df_sec_chunk = df_secondary[df_secondary.index <= ts]
+
+            decision = self.engine.decide(df.iloc[:i + 1], df_secondary=df_sec_chunk)
             
-            # Rejim istatistiği için
-            regime = decision.regime
-            
+            # Rejim ve meta verilerini al
+            regime_val = decision.regime
+            meta_conf = decision.meta_confidence
+            position_size = decision.position_size
+
             if decision.action == 'HOLD':
                 continue
 
             signals_total += 1
-            meta_conf = decision.meta_confidence
-            position_size = decision.position_size
-
-            # Trade verileri (Signal nesnesi gibi davranalım)
-            # engine.decide() içindeki gizli signal verilerine erişim
-            # engine._last_signal'dan çekebiliriz (debug için eklemiştik)
             signal = getattr(self.engine, '_last_signal', None)
-            if not signal: continue
+            if not signal:
+                continue
             
             # ── Aynı yönde açık trade var mı? ────────────────
             same_dir_open = any(
@@ -291,7 +297,7 @@ class AdaptiveBacktest:
                 'sl_mult': sl_mult,
                 'atr': atr_val,
                 'entry_bar': i,
-                'regime': regime,
+                'regime': regime_val,
                 'strategy': signal.strategy_name,
                 'signal_conf': signal.confidence,
                 'meta_conf': meta_conf,
@@ -306,7 +312,7 @@ class AdaptiveBacktest:
             if verbose:
                 print(f"  [{i}] OPEN {signal.direction}: "
                       f"entry={entry:.4f} tp={tp_price:.4f} sl={sl_price:.4f} "
-                      f"regime={regime.value} meta={meta_conf:.2f} "
+                      f"regime={regime_val} meta={meta_conf:.2f} "
                       f"size={position_size:.0%}")
 
         # ── Açık kalan trade'leri timeout ile kapat ──────────
@@ -623,16 +629,35 @@ def run_full_backtest(
             df = enrich_ohlcv_with_futures(df, sym, silent=True)
             df = generate_features(df)
 
-            # Son %30'u test olarak kullan
-            test_start = int(len(df) * (1 - test_split))
-            test_df = df.iloc[test_start:].copy()
+            # ── v1.5: Hybrid Data Fetching ────────────────
+            df_1h = df.copy()
+            df_15m = None
+            
+            try:
+                # 15m verisini de çek (Hibrit analiz için)
+                df_15m = fetcher.fetch_ohlcv(sym, "15m", limit=limit * 4)
+                if df_15m is not None and not df_15m.empty:
+                    df_15m = add_all_indicators(df_15m)
+                    df_15m = generate_features(df_15m)
+            except Exception as e:
+                print(f"  ⚠️ {sym} 15m veri çekme hatası (Hybrid atlanıyor): {e}")
 
-            if len(test_df) < 100:
+            # Son %30'u test olarak kullan
+            test_start = int(len(df_1h) * (1 - test_split))
+            test_df_1h = df_1h.iloc[test_start:].copy()
+            
+            # 15m verisini 1H test aralığına göre filtrele
+            test_df_15m = None
+            if df_15m is not None:
+                start_ts = test_df_1h.index[0]
+                test_df_15m = df_15m[df_15m.index >= (start_ts - pd.Timedelta(hours=24))].copy()
+
+            if len(test_df_1h) < 100:
                 skipped.append(sym)
                 continue
 
-            # Backtest çalıştır
-            bt_result = engine.run(test_df, symbol=sym, verbose=verbose)
+            # Backtest çalıştır (Hybrid)
+            bt_result = engine.run(test_df_1h, df_secondary=test_df_15m, symbol=sym, verbose=verbose)
 
             if bt_result.total_trades > 0:
                 all_results.append({
@@ -651,7 +676,7 @@ def run_full_backtest(
                 if (idx + 1) % 10 == 0:
                     print(f"  [{idx + 1}/{len(symbols)}] {sym}: No trades")
 
-            del df, test_df
+            del df, df_1h, test_df_1h, df_15m, test_df_15m
             gc.collect()
 
             if not use_cache:

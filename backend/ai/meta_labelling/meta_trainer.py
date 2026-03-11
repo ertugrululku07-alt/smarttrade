@@ -221,7 +221,7 @@ class MetaTrainer:
         results = trainer.train_all(symbols=DEFAULT_SYMBOLS, limit=3000)
     """
 
-    def __init__(self, timeframe: str = "15m"):
+    def __init__(self, timeframe: str = "1h"):
         self.timeframe = timeframe
         self.tf_config = _get_meta_tf_config(timeframe)
 
@@ -541,7 +541,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Meta-Label Trainer v1.0")
-    parser.add_argument('--timeframe', type=str, default='15m')
+    parser.add_argument('--timeframe', type=str, default='1h')
     parser.add_argument('--limit', type=int, default=3000)
     parser.add_argument('--trials', type=int, default=25)
     parser.add_argument('--symbols', type=str, default='')

@@ -37,8 +37,11 @@ class AdaptiveEngine:
     Ana Karar Mekanizması
     """
 
-    def __init__(self, timeframe: str = "15m"):
-        self.timeframe = timeframe
+    def __init__(self, primary_tf: str = "1h", secondary_tf: str = "15m", timeframe: Optional[str] = None):
+        if timeframe:
+            primary_tf = timeframe
+        self.timeframe = primary_tf
+        self.secondary_tf = secondary_tf
 
         self.strategies = {
             Regime.TRENDING: MomentumStrategy(),
@@ -50,7 +53,7 @@ class AdaptiveEngine:
         self.meta_predictor = None
         try:
             from ai.meta_labelling.meta_predictor import MetaPredictor
-            self.meta_predictor = MetaPredictor(timeframe=timeframe)
+            self.meta_predictor = MetaPredictor(timeframes=[primary_tf, secondary_tf])
             if not self.meta_predictor.is_ready:
                 print("  WARNING: Meta-model bulunamadi, filtresiz calisilacak")
                 self.meta_predictor = None
@@ -71,27 +74,41 @@ class AdaptiveEngine:
             'reject_reasons': {},
         }
 
-    def decide(self, df: pd.DataFrame) -> TradeDecision:
+    def decide(self, df: pd.DataFrame, df_secondary: Optional[pd.DataFrame] = None) -> TradeDecision:
+        """
+        Karar Mekanizması - Hybrid v1.5
+        df: Ana timeframe (orn 1h)
+        df_secondary: Ikincil timeframe (orn 15m) - Trending rejiminde kullanilir
+        """
         self._debug_counts['total_calls'] += 1
 
-        # Katman 1: Rejim Tespiti
+        # Katman 1: Rejim Tespiti (Stable 1H clock)
         regime, regime_details = detect_regime(df)
         rv = regime.value
         self._debug_counts['regime_counts'][rv] = \
             self._debug_counts['regime_counts'].get(rv, 0) + 1
 
-        # Katman 2: Primary Strateji Sinyali
+        # ── v1.5: Hybrid Timeframe Switching ────────────────
+        active_df = df
+        active_tf = self.timeframe
+
+        # Rejim TRENDING ise ve ikincil veri varsa 15m'ye gec (AUC avantajı)
+        if regime == Regime.TRENDING and df_secondary is not None:
+            active_df = df_secondary
+            active_tf = self.secondary_tf
+            # print(f"  [HYBRID] Trending rejiminde {active_tf} timeframe'e gecildi.")
+
+        # Katman 2: Primary Strateji Sinyali (Active TF uzerinde)
         strategy = self.strategies.get(regime)
         if strategy is None:
             self._debug_counts['no_strategy'] += 1
             return self._hold_decision(regime, "Strateji bulunamadı")
 
-        primary_signal = strategy.generate_signal(df)
+        primary_signal = strategy.generate_signal(active_df)
 
         # ── v1.4: Birincil strateji sinyal vermezse ─────────
-        # İkincil strateji dene (cross-regime)
         if not primary_signal.is_valid:
-            primary_signal = self._try_secondary_strategy(df, regime)
+            primary_signal = self._try_secondary_strategy(active_df, regime)
 
         if not primary_signal.is_valid:
             self._debug_counts['no_signal'] += 1
@@ -102,23 +119,16 @@ class AdaptiveEngine:
         # ── v1.4: Backtest uyumluluğu için sinyali sakla ─────
         self._last_signal = primary_signal
 
-        # ── v1.5 Alpha: High-Precision Sinyal Filtresi ──────
-        if primary_signal.confidence < 0.60:  # 0.50 -> 0.60 (Kalite artışı)
-            self._debug_counts['low_confidence'] += 1
-            print(f"  [FILTER] {regime.value} sinyali {primary_signal.confidence:.2f} < 0.60 (Reddedildi)")
-            return self._hold_decision(
-                regime,
-                f"Sinyal çok zayıf: {primary_signal.confidence:.2f} < 0.60")
-
-        # Katman 3: Meta-Filter (Zeka Katmanı)
-        meta_conf = primary_signal.confidence * 0.85  # Default fallback
+        # ── v1.5: Meta-Filter (Timeframe Aware) ─────────────
+        meta_conf = primary_signal.confidence * 0.85
 
         if self.meta_predictor is not None:
-            meta_conf, should_trade, threshold = self.meta_predictor.predict(
-                df=df,
+            meta_conf, should_trade, threshold, meta_reason = self.meta_predictor.predict(
+                df=active_df,
                 regime=regime,
                 signal_direction=primary_signal.direction,
                 signal_confidence=primary_signal.confidence,
+                timeframe=active_tf
             )
 
             if not should_trade:
@@ -126,7 +136,7 @@ class AdaptiveEngine:
                 self._track_reason(f"meta_reject_{rv}_{meta_conf:.2f}<{threshold:.2f}")
                 return self._hold_decision(
                     regime,
-                    f"Meta-filter rejected: {meta_conf:.2f} < {threshold:.2f}")
+                    f"Meta-filter rejected ({meta_reason}): {meta_conf:.2f} < {threshold:.2f}")
 
         # ── v1.3: Meta conf çift kontrol KALDIRILDI ─────────
         # (meta_predictor zaten threshold kontrolü yapıyor)
@@ -227,16 +237,17 @@ class AdaptiveEngine:
         return min(size, max_size)
 
     def _hold_decision(self, regime, reason: str) -> TradeDecision:
+        regime_val = regime.value if isinstance(regime, Regime) else str(regime)
         return TradeDecision(
             action='HOLD',
             confidence=0.0,
             position_size=0.0,
-            regime=regime.value if isinstance(regime, Regime) else str(regime),
+            regime=regime_val,
             primary_signal=None,
             meta_confidence=0.0,
             tp_atr_mult=0.0,
             sl_atr_mult=0.0,
-            reason=reason,
+            reason=f"HOLD [{reason}]",
         )
 
     def get_status(self) -> dict:

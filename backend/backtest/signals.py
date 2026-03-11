@@ -205,6 +205,28 @@ def add_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df['di_plus']  = _di_plus
     df['di_minus'] = _di_minus
 
+    # ── Wick & Candle Indicators (Phase 7) ──────────────────
+    df['candle_dir'] = np.sign(df['close'] - df['open'])
+    df['upper_wick'] = (df['high'] - df[['open', 'close']].max(axis=1)) / df['close']
+    df['lower_wick'] = (df[['open', 'close']].min(axis=1) - df['low']) / df['close']
+
+    # ── Specialized Features (Phase 8 - Hybrid) ──────────
+    # Efficiency Ratio (ER) - Trending quality
+    _direction = (close - close.shift(10)).abs()
+    _volatility = (close.diff().abs()).rolling(10).sum()
+    df['efficiency_ratio'] = _direction / (_volatility + 1e-9)
+    
+    # Z-Score - Mean Reversion distance
+    _sma20 = close.rolling(20).mean()
+    _std20 = close.rolling(20).std()
+    df['zscore_20'] = (close - _sma20) / (_std20 + 1e-9)
+    
+    # Wick Rejection Ratio
+    df['wick_rejection'] = (df['upper_wick'] - df['lower_wick']) / (df['bb_width'] + 1e-9)
+    
+    # ADX Acceleration
+    df['adx_accel'] = df['adx'].diff(3)
+
     return df
 
 
@@ -250,22 +272,15 @@ def confluence_score(df: pd.DataFrame) -> pd.Series:
 
 def generate_signals(df: pd.DataFrame, strategy: str = "confluence",
                      rsi_oversold: int = 30, rsi_overbought: int = 70,
-                     confluence_min: int = 3) -> pd.Series:
+                     confluence_min: int = 3, regime: str = None) -> pd.Series:
     """
     Belirlenen strateji tipine göre BUY/SELL/HOLD sinyali üretir.
-
-    Stratejiler:
-      - rsi_only: Sadece RSI tabanlı (oversold/overbought)
-      - macd_cross: Sadece MACD crossover
-      - ema_cross: Sadece EMA 9/21 crossover
-      - bb_bounce: Bollinger Band bouncing
-      - confluence: Çoklu indikatör birliği (en güçlü)
-      - scalping: EMA cross + RSI filtresi (hızlı trading)
-      - swing: MACD + BB + trend (uzun vadeli)
+    Regime-Aware: Sinyal üretimini mevcut pazar rejimine göre filtreler.
     """
     signal = pd.Series("HOLD", index=df.index)
     score = confluence_score(df)
 
+    # --- STRATEJİ SEÇİMİ ---
     if strategy == "rsi_only":
         signal[df['rsi'] < rsi_oversold] = "BUY"
         signal[df['rsi'] > rsi_overbought] = "SELL"
@@ -276,37 +291,28 @@ def generate_signals(df: pd.DataFrame, strategy: str = "confluence",
         signal[bullish_cross] = "BUY"
         signal[bearish_cross] = "SELL"
 
-    elif strategy == "ema_cross":
-        signal[df['ema_cross'] == 1] = "BUY"
-        signal[df['ema_cross'] == -1] = "SELL"
-
-    elif strategy == "bb_bounce":
-        signal[df['close'] < df['bb_lower']] = "BUY"
-        signal[df['close'] > df['bb_upper']] = "SELL"
-
     elif strategy == "confluence":
         signal[score >= confluence_min] = "BUY"
         signal[score <= -confluence_min] = "SELL"
+    
+    # Varsayılan fall-back (ema_cross vb. buraya eklenebilir)
+    else:
+        signal[df['ema_cross'] == 1] = "BUY"
+        signal[df['ema_cross'] == -1] = "SELL"
 
-    elif strategy == "scalping":
-        # EMA cross şartı + RSI < 65 filtresi
-        bullish = (df['ema_cross'] == 1) & (df['rsi'] < 65)
-        bearish = (df['ema_cross'] == -1) & (df['rsi'] > 35)
-        signal[bullish] = "BUY"
-        signal[bearish] = "SELL"
-
-    elif strategy == "swing":
-        # MACD + BB + trend filtresi
-        buy_cond = (
-            (df['macd'] > df['macd_signal']) &
-            (df['close'] < df['bb_mid']) &
-            (df['trend_up'])
-        )
-        sell_cond = (
-            (df['macd'] < df['macd_signal']) &
-            (df['close'] > df['bb_mid'])
-        )
-        signal[buy_cond] = "BUY"
-        signal[sell_cond] = "SELL"
+    # ── REGIME-AWARE FILTERING (Phase 7 Upgrade) ──────────────────────────
+    if regime == "trending":
+        # Trend rejiminde: Sadece trend yönündeki sinyalleri kabul et (EMA50 filtresi)
+        # LONG sinyali varsa ve fiyat EMA50 altındaysa -> IPTAL
+        signal[(signal == "BUY") & (df['close'] < df['ema50'])] = "HOLD"
+        # SHORT sinyali varsa ve fiyat EMA50 üstündeyse -> IPTAL
+        signal[(signal == "SELL") & (df['close'] > df['ema50'])] = "HOLD"
+        
+    elif regime == "mean_reverting":
+        # Yatay rejimde: Trend takip eden sinyalleri (EMA Cross gibi) zayıflat, 
+        # RSI ve Bollinger sekmelerine ağırlık ver.
+        # Eğer confluence skoru düşükse ve RSI orta bölgedeyse sinyali zayıflat.
+        signal[(signal == "BUY") & (df['rsi'] > 45)] = "HOLD"
+        signal[(signal == "SELL") & (df['rsi'] < 55)] = "HOLD"
 
     return signal, score

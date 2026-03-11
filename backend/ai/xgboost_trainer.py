@@ -1,9 +1,11 @@
 import pandas as pd
 
 FEATURE_COLS = [
-    'rsi', 'macd', 'macd_signal', 'macd_hist', 'bb_width', 
-    'atr_pct', 'stoch_k', 'stoch_d', 'ema_cross', 'bb_pos', 'adx', 
-    'di_plus', 'di_minus', 'volatility_10', 'momentum_10', 'atr_rank_50'
+    'rsi', 'macd_hist', 'bb_width', 
+    'atr_pct', 'stoch_k', 'ema_cross', 'bb_pos', 'adx', 
+    'di_plus', 'di_minus', 'volatility_10', 'momentum_10', 'atr_rank_50',
+    'hurst', # Phase 7
+    'efficiency_ratio', 'zscore_20', 'adx_accel' # Phase 8
 ]
 
 def _safe_rank(series):
@@ -38,6 +40,12 @@ def generate_features(df: pd.DataFrame) -> pd.DataFrame:
     if 'close' in df.columns:
         df['volatility_10'] = df['close'].rolling(10).std()
         df['momentum_10'] = df['close'].diff(10)
+        
+        # HURST Feature (Phase 7)
+        from ai.regime_detector import _hurst_exponent
+        df['hurst'] = df['close'].rolling(50).apply(
+            lambda x: _hurst_exponent(x.values), raw=False
+        )
         
     return df
 

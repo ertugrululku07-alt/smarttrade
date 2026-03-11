@@ -31,10 +31,11 @@ _signal_stats = {
 }
 
 
-def _get_engine(timeframe: str) -> AdaptiveEngine:
-    if timeframe not in _engines:
-        _engines[timeframe] = AdaptiveEngine(timeframe=timeframe)
-    return _engines[timeframe]
+def _get_engine(primary_tf: str = "1h", secondary_tf: str = "15m") -> AdaptiveEngine:
+    key = f"{primary_tf}_{secondary_tf}"
+    if key not in _engines:
+        _engines[key] = AdaptiveEngine(primary_tf=primary_tf, secondary_tf=secondary_tf)
+    return _engines[key]
 
 
 def _ensure_features(df: pd.DataFrame, symbol: str = "") -> pd.DataFrame:
@@ -85,13 +86,14 @@ def _ensure_features(df: pd.DataFrame, symbol: str = "") -> pd.DataFrame:
 
 def generate_signal(
     df: pd.DataFrame,
+    df_secondary: Optional[pd.DataFrame] = None,
     symbol: str = "UNKNOWN",
-    timeframe: str = "15m",
+    timeframe: str = "1h",
+    secondary_tf: str = "15m",
 ) -> Dict:
     """
     Mevcut bot ile uyumlu sinyal üretici.
-    
-    v1.1: DataFrame otomatik olarak işlenir.
+    Hybrid Mod v1.5: 1H primary ve Opsiyonel 15m secondary destekler.
     """
     _signal_stats['total_calls'] += 1
     
@@ -110,9 +112,9 @@ def generate_signal(
             _signal_stats['errors'] += 1
             return _hold_response(f"Eksik kolonlar: {missing}")
         
-        # ── Engine'e gönder ──────────────────────────────────
-        engine = _get_engine(timeframe)
-        decision = engine.decide(df)
+        # ── Engine'e gönder (Hybrid) ──────────────────────────
+        engine = _get_engine(timeframe, secondary_tf)
+        decision = engine.decide(df, df_secondary=df_secondary)
         
         if decision.action in ('LONG', 'SHORT'):
             _signal_stats['signals_generated'] += 1
@@ -143,8 +145,13 @@ def generate_signal(
     except Exception as e:
         _signal_stats['errors'] += 1
         error_detail = traceback.format_exc()
-        print(f"ERROR: Adaptive signal error ({symbol}): {e}\n{error_detail}")
-        return _hold_response(f'Error: {str(e)}')
+        # print(f"ERROR: Adaptive signal error ({symbol}): {e}\n{error_detail}")
+        return _hold_decision_with_error(f"Signal Generation Error: {str(e)}")
+
+def _hold_decision_with_error(error_msg: str) -> Dict:
+    resp = _hold_response(error_msg)
+    resp['strategy'] = 'error'
+    return resp
 
 
 def _hold_response(reason: str = "") -> Dict:

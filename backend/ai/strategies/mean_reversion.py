@@ -28,13 +28,17 @@ class MeanReversionStrategy(BaseStrategy):
         stoch_d = df['stoch_d'].iloc[-1]
         bb_pos = df['bb_pos'].iloc[-1]
         adx = df['adx'].iloc[-1] if 'adx' in df.columns else 20.0
+        hurst = df['hurst'].iloc[-1] if 'hurst' in df.columns else 0.5
         candle_dir = df['candle_dir'].iloc[-1] if 'candle_dir' in df.columns else 0
         lower_wick = df['lower_wick'].iloc[-1] if 'lower_wick' in df.columns else 0
         upper_wick = df['upper_wick'].iloc[-1] if 'upper_wick' in df.columns else 0
-
+        
         # Trend kontrolü — güçlü trend varsa mean reversion yapma
-        if adx > 30:
-            return self._no_signal(f"ADX cok yuksek ({adx:.0f})")
+        if adx > 25:
+            return self._no_signal(f"ADX cok yuksek ({adx:.0f}) - Trend var")
+        
+        if hurst > 0.48:
+            return self._no_signal(f"Hurst cok yuksek ({hurst:.2f}) - Trend riski")
 
         # ── v1.3: RSI momentum (son 3 bar'ın yönü) ──────────
         rsi_3_ago = df['rsi'].iloc[-3] if len(df) > 3 else rsi

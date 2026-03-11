@@ -380,13 +380,19 @@ class LivePaperTrader:
                         multiplier = max(0.1, min(multiplier, 2.0)) # safety bounds
                         
                         self._open(symbol, signal_result['signal'], c, multiplier, tp_price=tp_price, sl_price=sl_price, signal_result=signal_result)
+                    else:
+                        # Log why it didn't open
+                        reason = signal_result.get('reason', 'Unknown reason')
+                        conf = signal_result.get('confidence', 0)
+                        # Sadece belirli aralıklarla log atalım ki UI dolmasın (veya önemliyse hepsini atalım)
+                        if i % 50 == 0 or signal_result['signal'] != 'HOLD':
+                           self.log(f"🔍 {symbol} Signal: {signal_result['signal']} | Reason: {reason}")
 
                 # API limit yememek icin az bekle
                 time.sleep(0.5)
                 
             except Exception as e:
-                # self.log(f"Err {symbol}: {str(e)}") 
-                pass
+                self.log(f"❌ Error scanning {symbol}: {str(e)}")
 
     def _open(self, symbol, side, price, multiplier, tp_price=0.0, sl_price=0.0, signal_result=None):
         qty = (self.initial_balance * self.risk_pct * self.leverage * multiplier) / price

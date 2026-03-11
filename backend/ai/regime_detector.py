@@ -108,36 +108,36 @@ def detect_regime(df: pd.DataFrame, lookback: int = 50) -> Tuple[Regime, dict]:
         Regime.LOW_VOLATILE: 0.0,
     }
 
-    # --- TRENDING --- ORİJİNAL
-    if adx > 30:
-        scores[Regime.TRENDING] += 3.0
-    elif adx > 25:
-        scores[Regime.TRENDING] += 2.0
+    # --- TRENDING --- RECALIBRATED (Crypto/1H)
+    if adx > 25:
+        scores[Regime.TRENDING] += 3.5
     elif adx > 20:
+        scores[Regime.TRENDING] += 2.0
+    elif adx > 15:
         scores[Regime.TRENDING] += 1.0
 
     if hurst > 0.55:
-        scores[Regime.TRENDING] += 2.0
+        scores[Regime.TRENDING] += 2.5
     elif hurst > 0.50:
-        scores[Regime.TRENDING] += 1.0
-
-    if di_diff > 10:
-        scores[Regime.TRENDING] += 1.5
-    if directionality > 0.3:
         scores[Regime.TRENDING] += 1.5
 
-    # --- MEAN REVERTING --- ORİJİNAL
-    if adx < 20:
-        scores[Regime.MEAN_REVERTING] += 2.5
-    elif adx < 25:
+    if di_diff > 8:
+        scores[Regime.TRENDING] += 2.0
+    if directionality > 0.25:
+        scores[Regime.TRENDING] += 1.5
+
+    # --- MEAN REVERTING --- RECALIBRATED
+    if adx < 15:
+        scores[Regime.MEAN_REVERTING] += 3.0
+    elif adx < 20:
         scores[Regime.MEAN_REVERTING] += 1.5
 
-    if hurst < 0.45:
-        scores[Regime.MEAN_REVERTING] += 2.5
-    elif hurst < 0.50:
+    if hurst < 0.42:
+        scores[Regime.MEAN_REVERTING] += 3.0
+    elif hurst < 0.48:
         scores[Regime.MEAN_REVERTING] += 1.0
 
-    if bb_width < bb_width_avg * 0.8:
+    if bb_width < bb_width_avg * 0.75:
         scores[Regime.MEAN_REVERTING] += 1.5
     if directionality < 0.15:
         scores[Regime.MEAN_REVERTING] += 1.0

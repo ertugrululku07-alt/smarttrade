@@ -37,8 +37,8 @@ class MomentumStrategy(BaseStrategy):
         bearish_ema = ema9 < ema21 < ema50
         macd_bullish = macd_hist > 0 and macd_hist > macd_hist_prev
         macd_bearish = macd_hist < 0 and macd_hist < macd_hist_prev
-        strong_trend = adx > 25
-        very_strong_trend = adx > 35
+        strong_trend = adx > 20
+        very_strong_trend = adx > 30
         vol_confirm = vol_ratio > 1.2
 
         # LONG
