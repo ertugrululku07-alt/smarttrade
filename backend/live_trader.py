@@ -184,7 +184,10 @@ class LivePaperTrader:
             "pnl": round(pnl, 2),
             "pnl_pct": round(pnl_pct, 2),
             "regime": t.get('regime', 'unknown'),
-            "strategy": t.get('strategy', 'unknown')
+            "strategy": t.get('strategy', 'unknown'),
+            "sl_price": t.get('sl_price', 0),
+            "tp_price": t.get('tp_price', 0),
+            "pnl_history": t.get('pnl_history', [])
         }
 
     def _closed_trade_dict(self, t):
@@ -197,7 +200,8 @@ class LivePaperTrader:
             "pnl_pct": round((t['pnl']/t['margin'])*100, 2) if t['margin'] > 0 else 0,
             "reason": t.get('reason', 'UNKNOWN'),
             "regime": t.get('regime', 'unknown'),
-            "strategy": t.get('strategy', 'unknown')
+            "strategy": t.get('strategy', 'unknown'),
+            "pnl_history": t.get('pnl_history', [])
         }
 
     def _ticker_loop(self):
@@ -207,13 +211,49 @@ class LivePaperTrader:
             if self.open_trades:
                 try:
                     symbols = list(set([t['symbol'] for t in self.open_trades]))
-                    tickers = exchange.fetch_tickers(symbols)
                     for sym, data in tickers.items():
                         if data and 'last' in data and data['last']:
-                            self.current_prices[sym] = data['last']
+                            new_price = data['last']
+                            self.current_prices[sym] = new_price
+                            # Update PnL history for open trades of this symbol
+                            for t in self.open_trades:
+                                if t['symbol'] == sym:
+                                    self._record_pnl_snapshot(t, new_price)
                 except Exception as e:
                     pass
             time.sleep(3)
+
+    def _record_pnl_snapshot(self, t, current_price):
+        """Her 3 saniyede bir PnL kaydı al (Grafik için)"""
+        if 'pnl_history' not in t:
+            t['pnl_history'] = []
+            
+        entry = t['entry_price']
+        side = t['side']
+        qty = t['qty']
+        
+        n_in = qty * entry
+        n_out = qty * current_price
+        
+        if side == 'LONG':
+            pnl = (n_out - n_in) - (n_in + n_out) * 0.0002
+        else:
+            pnl = (n_in - n_out) - (n_in + n_out) * 0.0002
+            
+        pnl_pct = (pnl / t['margin']) * 100 if t['margin'] > 0 else 0
+        
+        snapshot = {
+            "t": datetime.now().strftime("%H:%M:%S"),
+            "p": round(current_price, 6),
+            "pnl": round(pnl, 2),
+            "pct": round(pnl_pct, 2)
+        }
+        
+        t['pnl_history'].append(snapshot)
+        
+        # Hafıza yönetimi: Son 200 kaydı tut (yaklaşık 10 dakikalık detaylı iz)
+        if len(t['pnl_history']) > 200:
+            t['pnl_history'].pop(0)
 
     def _run_loop(self):
         fetcher = DataFetcher('binance')
@@ -280,18 +320,21 @@ class LivePaperTrader:
                 sym_longs = [t for t in self.open_trades if t['symbol'] == symbol and t['side'] == 'LONG']
                 sym_shorts = [t for t in self.open_trades if t['symbol'] == symbol and t['side'] == 'SHORT']
                 
-                # --- 1. TP ve SL KONTROLU (AI Senkronizasyonlu & Trailing Stop) ---
+                # --- 1. TP ve SL KONTROLU (Real-time Price Engine) ---
                 for t in (sym_longs + sym_shorts):
                     side = t['side']
                     entry = t['entry_price']
                     current_sl = t.get('sl_price', 0)
                     target_tp = t.get('tp_price', 0)
                     
+                    # KRİTİK: OHLCV yerine anlık ticker fiyatını kullan
+                    real_tp = self.current_prices.get(symbol, c)
+                    
                     # Eğer AI fiyatları yoksa fallback yüzdelerini hesapla (Eski işlemler için)
                     if current_sl == 0 or target_tp == 0:
                         is_volatile = 'BTC' not in symbol
                         tp_fallback = 0.015 if is_volatile else 0.007
-                        sl_fallback = 0.04 if is_volatile else 0.02 # Tightened fallback
+                        sl_fallback = 0.04 if is_volatile else 0.02
                         if side == 'LONG':
                             target_tp = entry * (1 + tp_fallback)
                             current_sl = entry * (1 - sl_fallback)
@@ -302,43 +345,45 @@ class LivePaperTrader:
                         t['tp_price'] = target_tp
 
                     # Profit/Loss Calculation
-                    profit_pct = (c - entry) / entry if side == 'LONG' else (entry - c) / entry
+                    profit_pct = (real_tp - entry) / entry if side == 'LONG' else (entry - real_tp) / entry
                     
                     # 1. Take Profit (Hard Exit)
-                    hit_tp = (side == 'LONG' and c >= target_tp) or (side == 'SHORT' and c <= target_tp)
+                    hit_tp = (side == 'LONG' and real_tp >= target_tp) or (side == 'SHORT' and real_tp <= target_tp)
                     if hit_tp:
-                        self._close_all([t], symbol, c, f"TP_{side}_AI")
+                        self._close_all([t], symbol, real_tp, f"TP_{side}_REALTIME")
                         continue
 
                     # 2. Stop Loss (Protective Exit)
-                    hit_sl = (side == 'LONG' and c <= current_sl) or (side == 'SHORT' and c >= current_sl)
+                    hit_sl = (side == 'LONG' and real_tp <= current_sl) or (side == 'SHORT' and real_tp >= current_sl)
                     if hit_sl:
-                        self._close_all([t], symbol, c, f"SL_{side}_AI")
+                        self._close_all([t], symbol, real_tp, f"SL_{side}_REALTIME")
                         continue
 
                     # 3. Breakeven logic (Kâr %1'i geçerse stop'u girişe çek)
-                    if profit_pct >= 0.01 and t.get('be_active') is not True:
+                    if profit_pct >= 0.008 and t.get('be_active') is not True:
                         t['sl_price'] = entry # Stop can seviyesine çekildi
                         t['be_active'] = True
                         self.log(f"🛡️ BREAKEVEN active for {symbol} {side} @ {entry:.4f}")
 
-                    # 4. Dynamic Trailing Stop logic (Kâr arttıkça stopu sıkılaştır)
-                    if profit_pct >= 0.015:
-                        # Dinamik Takip Mesafesi (Sliding Scale)
-                        if profit_pct < 0.03:
-                            protect_ratio = 0.50  # %50'sini koru
+                    # 4. Dynamic Trailing Stop logic (Geliştirilmiş - Agresif Kilitleme)
+                    if profit_pct >= 0.012:
+                        # Sliding Scale: Kâr arttıkça stopu çok daha yakına çek
+                        if profit_pct < 0.02:
+                            protect_ratio = 0.40  # Kârın %40'ını koru
+                        elif profit_pct < 0.05:
+                            protect_ratio = 0.65  # Kârın %65'ini koru
                         elif profit_pct < 0.10:
-                            protect_ratio = 0.70  # %70'ini koru
+                            protect_ratio = 0.80  # Kârın %80'ini koru
                         else:
-                            protect_ratio = 0.85  # %85'ini koru (%20 kârda %17 stop)
+                            protect_ratio = 0.90  # %10+ kârda %90 koru
                             
-                        trail_distance = (c - entry) * protect_ratio if side == 'LONG' else (entry - c) * protect_ratio
+                        trail_distance = (real_tp - entry) * protect_ratio if side == 'LONG' else (entry - real_tp) * protect_ratio
                         new_tsl = entry + trail_distance if side == 'LONG' else entry - trail_distance
                         
                         # Sadece stop'u daha iyiye taşıyorsak güncelle
-                        if side == 'LONG' and new_tsl > t['sl_price']:
+                        if side == 'LONG' and new_tsl > t.get('sl_price', 0):
                             t['sl_price'] = new_tsl
-                        elif side == 'SHORT' and new_tsl < t['sl_price']:
+                        elif side == 'SHORT' and (t.get('sl_price', 999999) == 0 or new_tsl < t['sl_price']):
                             t['sl_price'] = new_tsl
 
                     # 5. Trend-Aware Smart Exit (Trend yorulmasını bekle)
