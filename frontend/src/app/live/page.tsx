@@ -57,8 +57,74 @@ const PnLChart = ({ data }: { data: any[] }) => {
     );
 };
 
+// --- Detailed Premium Modal Chart ---
+const DetailedPnLChart = ({ data, pair }: { data: any[], pair: string }) => {
+    if (!data || data.length < 2) return (
+        <div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
+            Not enough data points yet...
+        </div>
+    );
+
+    const values = data.map(d => d.pct);
+    const min = Math.min(...values, -0.2);
+    const max = Math.max(...values, 0.2);
+    const range = max - min || 1;
+    
+    const width = 600;
+    const height = 240;
+    const padding = 30;
+    
+    const points = data.map((d, i) => {
+        const x = padding + (i / (data.length - 1)) * (width - padding * 2);
+        const y = (height - padding) - ((d.pct - min) / range) * (height - padding * 2);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+
+    const isProfit = data[data.length - 1].pct >= 0;
+    const color = isProfit ? '#00d8a8' : '#f43f5e';
+
+    return (
+        <div style={{ width: '100%', background: 'rgba(0,0,0,0.2)', borderRadius: '12px', padding: '20px', border: '1px solid var(--border)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px' }}>
+                <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Performance Timeline ({pair})</span>
+                <span style={{ fontSize: '12px', fontWeight: 700, color: color }}>
+                    Current: {data[data.length - 1].pct.toFixed(2)}%
+                </span>
+            </div>
+            <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} style={{ overflow: 'visible' }}>
+                {/* Horizontal Grid lines */}
+                {[min, 0, max].map((v, i) => {
+                    const y = (height - padding) - ((v - min) / range) * (height - padding * 2);
+                    return (
+                        <g key={`grid-${i}`}>
+                            <line x1={padding} y1={y} x2={width - padding} y2={y} stroke="rgba(255,255,255,0.05)" strokeDasharray="4" />
+                            <text x={padding - 5} y={y + 4} textAnchor="end" fill="var(--text-muted)" style={{ fontSize: '10px' }}>{v.toFixed(1)}%</text>
+                        </g>
+                    )
+                })}
+                
+                {/* Path */}
+                <path d={`M ${padding},${height - padding} L ${points} L ${width - padding},${height - padding} Z`} fill={`url(#detailed-grad)`} opacity="0.1" />
+                <polyline fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" points={points} />
+                
+                {/* Time labels (start/end) */}
+                <text x={padding} y={height - 10} fill="var(--text-muted)" style={{ fontSize: '10px' }}>{data[0].t}</text>
+                <text x={width - padding} y={height - 10} textAnchor="end" fill="var(--text-muted)" style={{ fontSize: '10px' }}>{data[data.length - 1].t}</text>
+                
+                <defs>
+                    <linearGradient id="detailed-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+                        <stop offset="0%" stopColor={color} />
+                        <stop offset="100%" stopColor="transparent" />
+                    </linearGradient>
+                </defs>
+            </svg>
+        </div>
+    );
+};
+
 export default function LiveTradingPage() {
     const [statusData, setStatusData] = useState<any>(null);
+    const [selectedTrade, setSelectedTrade] = useState<any>(null);
     const [loading, setLoading] = useState(true);
     const [actionLoading, setActionLoading] = useState(false);
     const [closingTradeId, setClosingTradeId] = useState<string | null>(null);
@@ -255,9 +321,12 @@ export default function LiveTradingPage() {
                             ) : (
                                 <div key="list-open" className="list-container" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                                     {trades.map((trade: any) => (
-                                        <div key={`open-trade-${trade.id}`} className="glass glass-hover" style={{
-                                            borderRadius: '10px', padding: '14px 16px', border: '1px solid var(--border)'
-                                        }}>
+                                        <div 
+                                            key={`open-trade-${trade.id}`} 
+                                            className="glass glass-hover" 
+                                            style={{ borderRadius: '10px', padding: '14px 16px', border: '1px solid var(--border)', cursor: 'zoom-in' }}
+                                            onClick={() => setSelectedTrade(trade)}
+                                        >
                                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                                 <div>
                                                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px', flexWrap: 'wrap' }}>
@@ -373,7 +442,7 @@ export default function LiveTradingPage() {
                                                     <PnLChart data={t.pnl_history} />
                                                 </div>
                                             </div>
-                                            <div style={{ textAlign: 'right' }}>
+                                            <div style={{ textAlign: 'right', cursor: 'pointer' }} onClick={() => setSelectedTrade(t)}>
                                                 <div style={{ fontSize: '14px', fontWeight: 700, color: t.pnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)' }}>
                                                     {`${t.pnl >= 0 ? '+' : ''}$${t.pnl !== undefined ? t.pnl.toFixed(2) : '0.00'}`}
                                                     <span style={{ fontSize: '11px', marginLeft: 4 }}>
@@ -429,6 +498,69 @@ export default function LiveTradingPage() {
                     </div>
                 </div>
             </div>
+
+            {/* --- DETAILED TRADE MODAL --- */}
+            {selectedTrade && (
+                <div style={{
+                    position: 'fixed', top: 0, left: 0, width: '100%', height: '100%',
+                    background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(8px)',
+                    zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    padding: '20px'
+                }} onClick={() => setSelectedTrade(null)}>
+                    <div className="glass" style={{
+                        width: '100%', maxWidth: '700px', borderRadius: '20px', padding: '30px',
+                        border: '1px solid rgba(255,255,255,0.1)', position: 'relative'
+                    }} onClick={e => e.stopPropagation()}>
+                        <button 
+                            onClick={() => setSelectedTrade(null)}
+                            style={{ position: 'absolute', top: 20, right: 20, background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '20px' }}
+                        >✕</button>
+                        
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '24px' }}>
+                            <div>
+                                <h2 style={{ fontSize: '22px', fontWeight: 800, color: 'var(--text-primary)' }}>
+                                    {selectedTrade.pair} <span style={{ color: selectedTrade.side === 'LONG' ? 'var(--accent-green)' : 'var(--accent-red)', fontSize: '14px' }}>{selectedTrade.side}</span>
+                                </h2>
+                                <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>ID: {selectedTrade.id} · {selectedTrade.strategy} · {selectedTrade.regime?.replace('_', ' ')}</p>
+                            </div>
+                            <div style={{ textAlign: 'right' }}>
+                                <div style={{ fontSize: '24px', fontWeight: 800, color: selectedTrade.pnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)' }}>
+                                    {selectedTrade.pnl >= 0 ? '+' : '-'}${Math.abs(selectedTrade.pnl).toFixed(2)}
+                                </div>
+                                <div style={{ fontSize: '14px', color: 'var(--text-muted)' }}>{selectedTrade.pnl_pct.toFixed(2)}% ROI</div>
+                            </div>
+                        </div>
+
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px', marginBottom: '25px' }}>
+                            <div className="glass" style={{ padding: '15px', borderRadius: '12px', background: 'rgba(255,255,255,0.02)' }}>
+                                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '5px' }}>ENTRY CONDITIONS</div>
+                                <div style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                                    Quality Score: <span style={{ color: 'var(--accent-blue)' }}>{selectedTrade.soft_score}/5</span>
+                                </div>
+                                <div style={{ fontSize: '12px', color: 'var(--accent-primary)', marginTop: 4 }}>Type: {selectedTrade.entry_type?.toUpperCase()}</div>
+                            </div>
+                            <div className="glass" style={{ padding: '15px', borderRadius: '12px', background: 'rgba(255,255,255,0.02)' }}>
+                                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '5px' }}>BEST PERFORMANCE</div>
+                                <div style={{ fontSize: '14px', fontWeight: 600, color: 'var(--accent-green)' }}>
+                                    Max Profit: +{selectedTrade.max_pnl_pct?.toFixed(2)}%
+                                </div>
+                                <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: 4 }}>Entry: ${selectedTrade.entry}</div>
+                            </div>
+                        </div>
+
+                        <DetailedPnLChart data={selectedTrade.pnl_history} pair={selectedTrade.pair} />
+                        
+                        <div style={{ marginTop: '25px', padding: '15px', background: 'rgba(244, 63, 94, 0.05)', borderRadius: '10px', border: '1px solid rgba(244, 63, 94, 0.1)' }}>
+                            <div style={{ fontSize: '11px', color: 'var(--accent-red)', fontWeight: 700, marginBottom: '5px' }}>ACTIVE PROTECTIONS</div>
+                            <div style={{ display: 'flex', gap: '15px', fontSize: '12px', color: 'var(--text-primary)' }}>
+                                <span>SL: ${selectedTrade.sl_price?.toFixed(6) || '--'}</span>
+                                <span>TP: ${selectedTrade.tp_price?.toFixed(6) || '--'}</span>
+                                {selectedTrade.max_pnl_pct > 0.8 && <span style={{ color: 'var(--accent-green)' }}>✓ Breakeven Active</span>}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

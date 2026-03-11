@@ -183,10 +183,13 @@ class LivePaperTrader:
             "current_price": round(cp, 4),
             "pnl": round(pnl, 2),
             "pnl_pct": round(pnl_pct, 2),
+            "max_pnl_pct": round(t.get('max_pnl_pct', 0), 2),
             "regime": t.get('regime', 'unknown'),
             "strategy": t.get('strategy', 'unknown'),
             "sl_price": t.get('sl_price', 0),
             "tp_price": t.get('tp_price', 0),
+            "soft_score": t.get('soft_score', 0),
+            "entry_type": t.get('entry_type', 'unknown'),
             "pnl_history": t.get('pnl_history', [])
         }
 
@@ -243,6 +246,11 @@ class LivePaperTrader:
             
         pnl_pct = (pnl / t['margin']) * 100 if t['margin'] > 0 else 0
         
+        # Track Max PnL
+        if 'max_pnl_pct' not in t or pnl_pct > t['max_pnl_pct']:
+            t['max_pnl_pct'] = pnl_pct
+            t['max_pnl_val'] = pnl
+
         snapshot = {
             "t": datetime.now().strftime("%H:%M:%S"),
             "p": round(current_price, 6),
@@ -486,7 +494,10 @@ class LivePaperTrader:
                 "soft_score": signal_result.get('soft_score', 0)
             }
             self.open_trades.append(t)
-            self.log(f"🟢 OPEN {side} {symbol} @ {price:.2f} (x{multiplier})")
+            msg = f"🟢 OPEN {side} {symbol} @ {price:.6f} | Score: {t['soft_score']}/5 | Type: {t['entry_type']} | (x{multiplier:.2f})"
+            if t['tp_price'] > 0:
+                msg += f" | TP: {t['tp_price']:.6f} SL: {t['sl_price']:.6f}"
+            self.log(msg)
             self.save_state()
 
     def _close_all(self, trades, symbol, exit_price, reason):
@@ -512,9 +523,11 @@ class LivePaperTrader:
             self.closed_trades.append(t)
             self.open_trades.remove(t)
             
+            pnl_pct = (pnl / t['margin']) * 100 if t['margin'] > 0 else 0
+            max_p = t.get('max_pnl_pct', 0)
             pnl_str = f"+${pnl:.2f}" if pnl > 0 else f"-${abs(pnl):.2f}"
             icon = "✅" if pnl > 0 else "❌"
-            self.log(f"{icon} CLOSE {t['side']} {symbol} @ {exit_price:.2f} | PNL: {pnl_str} [{reason}]")
+            self.log(f"{icon} CLOSE {t['side']} {symbol} @ {exit_price:.6f} | PnL: {pnl_str} ({pnl_pct:.2f}%) | Max was: {max_p:.2f}% | Reason: {reason}")
             
             # --- consecutive loss tracking ---
             if pnl < 0:
