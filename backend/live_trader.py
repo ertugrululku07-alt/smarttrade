@@ -69,7 +69,9 @@ class LivePaperTrader:
         self.max_dca_levels = 5
         self.dca_spacing_pct = 0.01
         
-        self.scanned_symbols = SCAN_SYMBOLS # Başta varsayılan, sonra dinamik alınacak
+        self.scanned_symbols = SCAN_SYMBOLS
+        self.timeframe = "1h"
+        self.secondary_tf = "15m"
 
         self.load_state()
 
@@ -216,8 +218,11 @@ class LivePaperTrader:
                 try:
                     self.scanned_symbols = get_all_usdt_pairs()
                     self.log(f"🔄 Dynamic symbols fetched: {len(self.scanned_symbols)} USDT pairs")
-                except:
-                    pass
+                except Exception as e:
+                    if "451" in str(e) or "restricted" in str(e).lower():
+                        self.log("⚠️ Binance Region Restriction: Access denied from this server's location (HTTP 451). Using fallback symbols.")
+                    else:
+                        self.log(f"⚠️ Dynamic symbols fetch failed: {str(e)}. Using fallback.")
 
                 self.log(f"🔍 Scanning {len(self.scanned_symbols)} markets...")
                 self._scan_and_trade(fetcher)
@@ -237,19 +242,31 @@ class LivePaperTrader:
             if not self.is_running: break
             
             try:
-                df = fetcher.fetch_ohlcv(symbol, '15m', limit=250)
-                if df.empty or len(df) < 200: 
+                # ── v1.5: Hybrid Data Fetching (1H Primary + 15M Secondary) ──
+                df_1h = fetcher.fetch_ohlcv(symbol, self.timeframe, limit=200)
+                if df_1h.empty or len(df_1h) < 100: 
                     continue
                 
-                # Sadece her 50 coin'de bir ilerleme özeti basalım (log kirliliği olmasın)
-                if i % 50 == 0:
-                    self.log(f"🕯️ Scanning progress: {i}/{len(self.scanned_symbols)} symbols processed.")
+                df_15m = fetcher.fetch_ohlcv(symbol, self.secondary_tf, limit=250)
+                if df_15m.empty or len(df_15m) < 100:
+                    continue
 
-                df = add_all_indicators(df)
-                df = enrich_ohlcv_with_futures(df, symbol, silent=True)
-                df = generate_features(df)
+                if i % 30 == 0:
+                    self.log(f"🕯️ Scanning {symbol} (Hybrid: {self.timeframe}/{self.secondary_tf})")
+
+                # Note: Adapter automatically handles indicators/features if missing
+                df_1h = add_all_indicators(df_1h)
+                df_1h = enrich_ohlcv_with_futures(df_1h, symbol, silent=True)
+                df_1h = generate_features(df_1h)
+
+                df_15m = add_all_indicators(df_15m)
+                df_15m = enrich_ohlcv_with_futures(df_15m, symbol, silent=True)
+                df_15m = generate_features(df_15m)
                 
-                last_row = df.iloc[-1]
+                # Sinyal tespiti için 1H dominanttır, ama TP/SL için 15m hassasiyeti de alınabilir.
+                last_row = df_1h.iloc[-1]
+                last_15m = df_15m.iloc[-1]
+                
                 c = last_row['close']
                 atr = last_row['atr']
                 
@@ -299,32 +316,54 @@ class LivePaperTrader:
                         t['be_active'] = True
                         self.log(f"🛡️ BREAKEVEN active for {symbol} {side} @ {entry:.4f}")
 
-                    # 4. Trailing Stop logic (Kâr %1.5'i geçerse takip et)
+                    # 4. Dynamic Trailing Stop logic (Kâr arttıkça stopu sıkılaştır)
                     if profit_pct >= 0.015:
-                        # ATR bazlı takip (basit: kârın %50'sini koru)
-                        trail_distance = (c - entry) * 0.5 if side == 'LONG' else (entry - c) * 0.5
-                        new_tsl = c - trail_distance if side == 'LONG' else c + trail_distance
+                        # Dinamik Takip Mesafesi (Sliding Scale)
+                        if profit_pct < 0.03:
+                            protect_ratio = 0.50  # %50'sini koru
+                        elif profit_pct < 0.10:
+                            protect_ratio = 0.70  # %70'ini koru
+                        else:
+                            protect_ratio = 0.85  # %85'ini koru (%20 kârda %17 stop)
+                            
+                        trail_distance = (c - entry) * protect_ratio if side == 'LONG' else (entry - c) * protect_ratio
+                        new_tsl = entry + trail_distance if side == 'LONG' else entry - trail_distance
                         
                         # Sadece stop'u daha iyiye taşıyorsak güncelle
                         if side == 'LONG' and new_tsl > t['sl_price']:
                             t['sl_price'] = new_tsl
-                            # self.log(f"📈 TSL update {symbol}: {new_tsl:.4f}")
                         elif side == 'SHORT' and new_tsl < t['sl_price']:
                             t['sl_price'] = new_tsl
-                            # self.log(f"📉 TSL update {symbol}: {new_tsl:.4f}")
 
-                    # RSI Overbought/Oversold Guard (Quick Exit)
-                    if side == 'LONG' and last_row['rsi'] > 75 and profit_pct > 0.005:
-                        self._close_all([t], symbol, c, "RSI_OB_EXIT")
-                    elif side == 'SHORT' and last_row['rsi'] < 25 and profit_pct > 0.005:
-                        self._close_all([t], symbol, c, "RSI_OS_EXIT")
+                    # 5. Trend-Aware Smart Exit (Trend yorulmasını bekle)
+                    # RSI tepedeyken hemen satma, trendin bozulmasını bekle
+                    is_exhausted = False
+                    if side == 'LONG' and last_row['rsi'] > 75 and profit_pct > 0.03:
+                        # Sinyal: Fiyat EMA9 altına inerse veya MACD histogramı düşerse
+                        if c < last_row['ema9'] or last_row['macd_hist'] < df.iloc[-2]['macd_hist']:
+                            is_exhausted = True
+                            exit_reason = "SMART_EXIT_LONG_RSI_EMA"
+                            
+                    elif side == 'SHORT' and last_row['rsi'] < 25 and profit_pct > 0.03:
+                        if c > last_row['ema9'] or last_row['macd_hist'] > df.iloc[-2]['macd_hist']:
+                            is_exhausted = True
+                            exit_reason = "SMART_EXIT_SHORT_RSI_EMA"
+
+                    if is_exhausted:
+                        self._close_all([t], symbol, c, exit_reason)
 
                 # --- 2. GİRİŞ (SİNYAL) KONTROLU ---
                 can_open_new = len(self.open_trades) < self.max_open_trades_limit
                 
                 if can_open_new and len(sym_longs) == 0 and len(sym_shorts) == 0:
-                    # Sadece mevcut açık işlemi yoksa yeni işlem açalım (DCA iptal ediliyor, adaptive engine kullanılıyor)
-                    signal_result = generate_signal(df, symbol, self.timeframe if hasattr(self, 'timeframe') else '15m')
+                    # Hybrid Engine'i çağır
+                    signal_result = generate_signal(
+                        df_1h, 
+                        df_secondary=df_15m, 
+                        symbol=symbol, 
+                        timeframe=self.timeframe,
+                        secondary_tf=self.secondary_tf
+                    )
                     
                     if should_open_position(signal_result, min_confidence=0.60):
                         tp_price, sl_price = get_tp_sl_prices(signal_result, c, atr)
