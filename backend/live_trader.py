@@ -211,6 +211,7 @@ class LivePaperTrader:
             if self.open_trades:
                 try:
                     symbols = list(set([t['symbol'] for t in self.open_trades]))
+                    tickers = exchange.fetch_tickers(symbols)
                     for sym, data in tickers.items():
                         if data and 'last' in data and data['last']:
                             new_price = data['last']
