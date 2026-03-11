@@ -22,7 +22,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Create data directory for volume persistence
-RUN mkdir -p /app/data
+RUN mkdir -p /app/data && chmod 777 /app/data
 
-# Start application (using Railway's dynamic PORT)
+# Start application
+# v1.5.2: Explicitly using sh -c to ensure environment variable expansion
 CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
