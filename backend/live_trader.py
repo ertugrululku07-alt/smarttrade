@@ -69,6 +69,7 @@ class LivePaperTrader:
         self.max_dca_levels = 5
         self.dca_spacing_pct = 0.01
         
+        self.scanned_symbols = SCAN_SYMBOLS
         self.timeframe = "1h"
         self.secondary_tf = "15m"
 
