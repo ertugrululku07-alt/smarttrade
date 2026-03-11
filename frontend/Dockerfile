@@ -4,8 +4,11 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install
 COPY . .
-# Set NEXT_PUBLIC_API_URL here if needed during build, 
-# but getApiUrl handles it at runtime if available
+
+# Pass build-time environment variables
+ARG NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+
 RUN npm run build
 
 # Stage 2: Production

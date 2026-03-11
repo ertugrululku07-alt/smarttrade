@@ -11,6 +11,9 @@ export default function LiveTradingPage() {
     const [maxOpenTrades, setMaxOpenTrades] = useState<number | null>(null);
     const [savingSettings, setSavingSettings] = useState(false);
 
+    const [isMounted, setIsMounted] = useState(false);
+    useEffect(() => { setIsMounted(true); }, []);
+
     const fetchStatus = async () => {
         try {
             const res = await fetch(getApiUrl("/live/quant/status"));
@@ -87,6 +90,7 @@ export default function LiveTradingPage() {
         }
     };
 
+    if (!isMounted) return null;
     if (loading) return <div style={{ padding: 24, color: 'var(--text-muted)' }}>Loading AI Auto-Trader...</div>;
 
     const isRunning = statusData?.status === "Running";

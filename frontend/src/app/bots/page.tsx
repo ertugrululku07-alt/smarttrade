@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { getApiUrl } from '@/utils/api';
 
-const API = getApiUrl();
+// API constant removed to prevent build-time bake-in
 
 const STRATEGY_LABELS: Record<string, string> = {
     quant_grid: 'RSI Grid Scalper',
@@ -330,7 +330,7 @@ export default function BotsPage() {
             return;
         }
         try {
-            const res = await fetch(`${API}/live/bots/close-all`, { method: 'POST' });
+            const res = await fetch(getApiUrl('/live/bots/close-all'), { method: 'POST' });
             if (res.ok) setTimeout(fetchStatus, 800);
         } catch { }
     };
