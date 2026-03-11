@@ -69,12 +69,9 @@ class LivePaperTrader:
         self.max_dca_levels = 5
         self.dca_spacing_pct = 0.01
         
+        self.scanned_symbols = SCAN_SYMBOLS
         self.timeframe = "1h"
         self.secondary_tf = "15m"
-
-        # v2.0 Tracking
-        self.consecutive_losses = 0
-        self.symbol_consecutive_losses = {} # symbol -> count
 
         self.load_state()
 
@@ -110,9 +107,7 @@ class LivePaperTrader:
                 'closed_trades': self.closed_trades,
                 'logs': self.logs,
                 'trade_counter': self.trade_counter,
-                'max_open_trades_limit': self.max_open_trades_limit,
-                'consecutive_losses': self.consecutive_losses,
-                'symbol_consecutive_losses': self.symbol_consecutive_losses
+                'max_open_trades_limit': self.max_open_trades_limit
             }
             with open(self.state_file, 'w', encoding='utf-8') as f:
                 json.dump(state, f, indent=4)
@@ -370,16 +365,9 @@ class LivePaperTrader:
                         secondary_tf=self.secondary_tf
                     )
                     
-                    if should_open_position(signal_result, min_confidence=0.55):
-                        # Calculate consecutive loss multiplier
-                        sym_loss = self.symbol_consecutive_losses.get(symbol, 0)
-                        loss_mult = 1.0
-                        if sym_loss == 1: loss_mult = 1.0
-                        elif sym_loss == 2: loss_mult = 0.75
-                        elif sym_loss >= 3: loss_mult = 0.50
-                        
-                        # Apply score-based position sizing from engine
-                        # (Kelly already considered in adapter, but we add our loss protection)
+                    if should_open_position(signal_result, min_confidence=0.60):
+                        tp_price, sl_price = get_tp_sl_prices(signal_result, c, atr)
+                        # Kelly-based position sizing
                         multiplier = calculate_position_amount(
                             signal_result, 
                             self.initial_balance, 
@@ -388,22 +376,10 @@ class LivePaperTrader:
                             atr=atr
                         ) * c / self.initial_balance / self.risk_pct / self.leverage
                         
-                        # Scored scaling
-                        final_multiplier = multiplier * loss_mult
-                        final_multiplier = max(0.1, min(final_multiplier, 2.0))
+                        # Fix multiplier if Kelly calculation changes standard mechanism
+                        multiplier = max(0.1, min(multiplier, 2.0)) # safety bounds
                         
-                        # Determine TP/SL from signal (v2.0 Scored Logic)
-                        tp_price = signal_result.get('tp_price', 0.0)
-                        sl_price = signal_result.get('sl_price', 0.0)
-                        
-                        # Fallback to ATR if strategy didn't provide explicit prices (Breakouts focus)
-                        if tp_price == 0 or sl_price == 0:
-                            tp_p, sl_p = get_tp_sl_prices(signal_result, c, atr)
-                            if tp_price == 0: tp_price = tp_p
-                            if sl_price == 0: sl_price = sl_p
-
-                        self._open(symbol, signal_result['signal'], c, final_multiplier, 
-                                  tp_price=tp_price, sl_price=sl_price, signal_result=signal_result)
+                        self._open(symbol, signal_result['signal'], c, multiplier, tp_price=tp_price, sl_price=sl_price, signal_result=signal_result)
                     else:
                         # Log why it didn't open
                         reason = signal_result.get('reason', 'Unknown reason')
@@ -435,8 +411,6 @@ class LivePaperTrader:
                 "sl_price": sl_price,
                 "strategy": signal_result['strategy'] if signal_result else 'unknown',
                 "regime": signal_result['regime'] if signal_result else 'unknown',
-                "entry_type": signal_result.get('entry_type', 'none'),
-                "soft_score": signal_result.get('soft_score', 0)
             }
             self.open_trades.append(t)
             self.log(f"🟢 OPEN {side} {symbol} @ {price:.2f} (x{multiplier})")
@@ -468,14 +442,6 @@ class LivePaperTrader:
             pnl_str = f"+${pnl:.2f}" if pnl > 0 else f"-${abs(pnl):.2f}"
             icon = "✅" if pnl > 0 else "❌"
             self.log(f"{icon} CLOSE {t['side']} {symbol} @ {exit_price:.2f} | PNL: {pnl_str} [{reason}]")
-            
-            # --- consecutive loss tracking ---
-            if pnl < 0:
-                self.consecutive_losses += 1
-                self.symbol_consecutive_losses[symbol] = self.symbol_consecutive_losses.get(symbol, 0) + 1
-            else:
-                self.consecutive_losses = 0
-                self.symbol_consecutive_losses[symbol] = 0
         if trades:
             self.save_state()
 

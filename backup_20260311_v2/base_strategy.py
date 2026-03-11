@@ -12,31 +12,22 @@ import pandas as pd
 class Signal:
     """Strateji sinyali"""
     direction: Optional[str]   # 'LONG', 'SHORT', None
-    confidence: float          # 0.0 - 1.0 (HardPass + SoftScore combined)
+    confidence: float          # 0.0 - 1.0
     strategy_name: str         # Hangi strateji üretti
     regime: str                # Hangi rejimde üretildi
     reason: str                # İnsan-okunabilir neden
     entry_price: float = 0.0
     tp_atr_mult: float = 2.0   # TP = entry ± tp_mult × ATR
     sl_atr_mult: float = 1.3   # SL = entry ∓ sl_mult × ATR
-    
-    # --- Hard/Soft Architecture v2.0 ---
-    hard_pass: bool = False
-    soft_score: int = 0        # 0 - 5
-    entry_type: str = "none"   # 'breakout', 'pullback', 'none'
-    tp_price: float = 0.0      # Explicit TP for Pullbacks
-    sl_price: float = 0.0      # Explicit SL for Pullbacks
 
     @property
     def is_valid(self) -> bool:
-        # Prensip: Hard filtre geçmeli ve en az 3 soft skor olmalı
-        return self.direction is not None and self.hard_pass and self.soft_score >= 3
+        return self.direction is not None and self.confidence > 0.0
 
     def __repr__(self):
         if not self.is_valid:
-            valid_reason = "HardFail" if not self.hard_pass else f"LowScore({self.soft_score})"
-            return f"Signal(HOLD | {valid_reason} | {self.strategy_name})"
-        return (f"Signal({self.direction} | {self.entry_type} | score={self.soft_score} | "
+            return f"Signal(HOLD | {self.strategy_name})"
+        return (f"Signal({self.direction} | conf={self.confidence:.2f} | "
                 f"{self.strategy_name} | {self.reason})")
 
 
@@ -58,7 +49,7 @@ class BaseStrategy(ABC):
         """
         pass
 
-    def _no_signal(self, reason: str = "", hard_pass: bool = False, soft_score: int = 0) -> Signal:
+    def _no_signal(self, reason: str = "") -> Signal:
         """Sinyal yok döndür"""
         return Signal(
             direction=None,
@@ -66,19 +57,10 @@ class BaseStrategy(ABC):
             strategy_name=self.name,
             regime=self.regime,
             reason=reason or "No signal",
-            hard_pass=hard_pass,
-            soft_score=soft_score
         )
 
-    def _long_signal(self, soft_score: int, reason: str,
-                     entry_price: float = 0.0,
-                     entry_type: str = "none",
-                     hard_pass: bool = True,
-                     tp_price: float = 0.0,
-                     sl_price: float = 0.0) -> Signal:
-        # Confidence logic: baseline 0.5 + (soft_score/10)
-        confidence = 0.5 + (soft_score / 10.0) if hard_pass else 0.0
-        
+    def _long_signal(self, confidence: float, reason: str,
+                     entry_price: float = 0.0) -> Signal:
         return Signal(
             direction='LONG',
             confidence=confidence,
@@ -88,21 +70,10 @@ class BaseStrategy(ABC):
             entry_price=entry_price,
             tp_atr_mult=self.default_tp_mult,
             sl_atr_mult=self.default_sl_mult,
-            hard_pass=hard_pass,
-            soft_score=soft_score,
-            entry_type=entry_type,
-            tp_price=tp_price,
-            sl_price=sl_price
         )
 
-    def _short_signal(self, soft_score: int, reason: str,
-                      entry_price: float = 0.0,
-                      entry_type: str = "none",
-                      hard_pass: bool = True,
-                      tp_price: float = 0.0,
-                      sl_price: float = 0.0) -> Signal:
-        confidence = 0.5 + (soft_score / 10.0) if hard_pass else 0.0
-        
+    def _short_signal(self, confidence: float, reason: str,
+                      entry_price: float = 0.0) -> Signal:
         return Signal(
             direction='SHORT',
             confidence=confidence,
@@ -112,9 +83,4 @@ class BaseStrategy(ABC):
             entry_price=entry_price,
             tp_atr_mult=self.default_tp_mult,
             sl_atr_mult=self.default_sl_mult,
-            hard_pass=hard_pass,
-            soft_score=soft_score,
-            entry_type=entry_type,
-            tp_price=tp_price,
-            sl_price=sl_price
         )

@@ -31,11 +31,6 @@ class TradeDecision:
     tp_atr_mult: float = 2.0
     sl_atr_mult: float = 1.0
     reason: str = ""
-    # v2.0: Scored Trading Fields
-    soft_score: int = 0
-    entry_type: str = "none"
-    tp_price: float = 0.0
-    sl_price: float = 0.0
 
 class AdaptiveEngine:
     """
@@ -117,9 +112,9 @@ class AdaptiveEngine:
 
         if not primary_signal.is_valid:
             self._debug_counts['no_signal'] += 1
-            self._track_reason(f"{primary_signal.reason}_{rv}")
+            self._track_reason(f"no_signal_{rv}")
             return self._hold_decision(
-                regime, f"Signal rejected ({primary_signal.reason})")
+                regime, f"Hicbir strateji sinyal uretmedi ({rv})")
 
         # ── v1.4: Backtest uyumluluğu için sinyali sakla ─────
         self._last_signal = primary_signal
@@ -143,9 +138,12 @@ class AdaptiveEngine:
                     regime,
                     f"Meta-filter rejected ({meta_reason}): {meta_conf:.2f} < {threshold:.2f}")
 
-        # Risk Yönetimi (Position Sizing - SCORED v2.0)
+        # ── v1.3: Meta conf çift kontrol KALDIRILDI ─────────
+        # (meta_predictor zaten threshold kontrolü yapıyor)
+
+        # Risk Yönetimi (Position Sizing)
         position_size = self._calculate_position_size(
-            primary_signal.soft_score, meta_conf, regime
+            primary_signal.confidence, meta_conf, regime
         )
 
         # Final Güven Skoru (Ağırlıklı Ortalama)
@@ -164,10 +162,6 @@ class AdaptiveEngine:
             sl_atr_mult=primary_signal.sl_atr_mult,
             reason=(f"{regime.value} | {primary_signal.reason} | "
                     f"meta={meta_conf:.2f} size={position_size:.0%}"),
-            soft_score=primary_signal.soft_score,
-            entry_type=primary_signal.entry_type,
-            tp_price=primary_signal.tp_price,
-            sl_price=primary_signal.sl_price
         )
 
     def _try_secondary_strategy(self, df: pd.DataFrame, primary_regime: Regime) -> Signal:
@@ -217,19 +211,10 @@ class AdaptiveEngine:
             self._debug_counts['reject_reasons'].get(key, 0) + 1
 
     def _calculate_position_size(
-        self, soft_score: int, meta_conf: float, regime: Regime
+        self, signal_conf: float, meta_conf: float, regime: Regime
     ) -> float:
-        """v2.0 Scored Position Sizing"""
-        # Base size multiplier based on Soft Score (Gradient Trading)
-        # Score 5: 100%, Score 4: 75%, Score 3: 50%, <3: 0 (filtered)
-        score_mult = 0.0
-        if soft_score == 5: score_mult = 1.0
-        elif soft_score == 4: score_mult = 0.75
-        elif soft_score == 3: score_mult = 0.50
-        
-        # Meta confidence also scales the size
-        meta_mult = min(1.0, meta_conf / 0.75) # 0.75+ results in 1.0x meta mult
-        
+        """v1.3: Position sizing mantığı"""
+        combined = signal_conf * 0.3 + meta_conf * 0.7
         regime_max = {
             Regime.TRENDING: 1.0,
             Regime.MEAN_REVERTING: 0.80,
@@ -238,7 +223,17 @@ class AdaptiveEngine:
         }
         max_size = regime_max.get(regime, 0.50)
 
-        size = score_mult * meta_mult
+        if combined >= 0.75:
+            size = 1.0
+        elif combined >= 0.65:
+            size = 0.75
+        elif combined >= 0.55:
+            size = 0.50
+        elif combined >= 0.45:
+            size = 0.25
+        else:
+            size = 0.10  # Minimum pozisyon
+
         return min(size, max_size)
 
     def _hold_decision(self, regime, reason: str) -> TradeDecision:
