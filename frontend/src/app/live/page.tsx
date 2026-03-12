@@ -522,12 +522,25 @@ export default function LiveTradingPage() {
                                     {selectedTrade.pair} <span style={{ color: selectedTrade.side === 'LONG' ? 'var(--accent-green)' : 'var(--accent-red)', fontSize: '14px' }}>{selectedTrade.side}</span>
                                 </h2>
                                 <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>ID: {selectedTrade.id} · {selectedTrade.strategy} · {selectedTrade.regime?.replace('_', ' ')}</p>
+                                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: 4 }}>
+                                    {selectedTrade.entry_time} {selectedTrade.exit_time && `→ ${selectedTrade.exit_time}`}
+                                </div>
                             </div>
                             <div style={{ textAlign: 'right' }}>
                                 <div style={{ fontSize: '24px', fontWeight: 800, color: selectedTrade.pnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)' }}>
                                     {selectedTrade.pnl >= 0 ? '+' : '-'}${Math.abs(selectedTrade.pnl).toFixed(2)}
                                 </div>
                                 <div style={{ fontSize: '14px', color: 'var(--text-muted)' }}>{selectedTrade.pnl_pct.toFixed(2)}% ROI</div>
+                                {selectedTrade.exit_time && (
+                                    <div style={{ 
+                                        fontSize: '11px', fontWeight: 700, marginTop: 4, padding: '2px 8px', borderRadius: '4px',
+                                        background: selectedTrade.pnl > 0 ? 'rgba(0, 216, 168, 0.1)' : 'rgba(244, 63, 94, 0.1)',
+                                        color: selectedTrade.pnl > 0 ? 'var(--accent-green)' : 'var(--accent-red)',
+                                        display: 'inline-block'
+                                    }}>
+                                        {selectedTrade.reason}
+                                    </div>
+                                )}
                             </div>
                         </div>
 
@@ -538,24 +551,30 @@ export default function LiveTradingPage() {
                                     Quality Score: <span style={{ color: 'var(--accent-blue)' }}>{selectedTrade.soft_score}/5</span>
                                 </div>
                                 <div style={{ fontSize: '12px', color: 'var(--accent-primary)', marginTop: 4 }}>Type: {selectedTrade.entry_type?.toUpperCase()}</div>
+                                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: 4 }}>Price: ${selectedTrade.entry.toFixed(6)}</div>
                             </div>
                             <div className="glass" style={{ padding: '15px', borderRadius: '12px', background: 'rgba(255,255,255,0.02)' }}>
-                                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '5px' }}>BEST PERFORMANCE</div>
+                                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '5px' }}>PERFORMANCE METRICS</div>
                                 <div style={{ fontSize: '14px', fontWeight: 600, color: 'var(--accent-green)' }}>
                                     Max Profit: +{selectedTrade.max_pnl_pct?.toFixed(2)}%
                                 </div>
-                                <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: 4 }}>Entry: ${selectedTrade.entry}</div>
+                                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: 4 }}>
+                                    {selectedTrade.exit ? `Exit: $${selectedTrade.exit.toFixed(6)}` : `Size: $${selectedTrade.margin.toFixed(2)}`}
+                                </div>
                             </div>
                         </div>
 
                         <DetailedPnLChart data={selectedTrade.pnl_history} pair={selectedTrade.pair} />
                         
-                        <div style={{ marginTop: '25px', padding: '15px', background: 'rgba(244, 63, 94, 0.05)', borderRadius: '10px', border: '1px solid rgba(244, 63, 94, 0.1)' }}>
-                            <div style={{ fontSize: '11px', color: 'var(--accent-red)', fontWeight: 700, marginBottom: '5px' }}>ACTIVE PROTECTIONS</div>
-                            <div style={{ display: 'flex', gap: '15px', fontSize: '12px', color: 'var(--text-primary)' }}>
+                        <div style={{ marginTop: '25px', padding: '15px', background: selectedTrade.exit_time ? 'rgba(255, 255, 255, 0.03)' : 'rgba(244, 63, 94, 0.05)', borderRadius: '10px', border: '1px solid rgba(255, 255, 255, 0.05)' }}>
+                            <div style={{ fontSize: '11px', color: selectedTrade.exit_time ? 'var(--text-muted)' : 'var(--accent-red)', fontWeight: 700, marginBottom: '5px' }}>
+                                {selectedTrade.exit_time ? 'POSITION SUMMARY' : 'ACTIVE PROTECTIONS'}
+                            </div>
+                            <div style={{ display: 'flex', gap: '20px', fontSize: '12px', color: 'var(--text-primary)' }}>
                                 <span>SL: ${selectedTrade.sl_price?.toFixed(6) || '--'}</span>
                                 <span>TP: ${selectedTrade.tp_price?.toFixed(6) || '--'}</span>
-                                {selectedTrade.max_pnl_pct > 0.8 && <span style={{ color: 'var(--accent-green)' }}>✓ Breakeven Active</span>}
+                                {!selectedTrade.exit_time && selectedTrade.max_pnl_pct > 0.8 && <span style={{ color: 'var(--accent-green)' }}>✓ Breakeven Active</span>}
+                                {selectedTrade.exit_time && <span>Status: {selectedTrade.pnl > 0 ? 'PROFIT' : 'LOSS'}</span>}
                             </div>
                         </div>
                     </div>

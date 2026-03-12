@@ -201,9 +201,14 @@ class LivePaperTrader:
             "entry_time": t['entry_time'], "exit_time": t.get('exit_time', '--'),
             "pnl": round(t['pnl'], 2), 
             "pnl_pct": round((t['pnl']/t['margin'])*100, 2) if t['margin'] > 0 else 0,
+            "max_pnl_pct": round(t.get('max_pnl_pct', 0), 2),
             "reason": t.get('reason', 'UNKNOWN'),
             "regime": t.get('regime', 'unknown'),
             "strategy": t.get('strategy', 'unknown'),
+            "soft_score": t.get('soft_score', 0),
+            "entry_type": t.get('entry_type', 'unknown'),
+            "sl_price": t.get('sl_price', 0),
+            "tp_price": t.get('tp_price', 0),
             "pnl_history": t.get('pnl_history', [])
         }
 
