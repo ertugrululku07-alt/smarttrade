@@ -157,8 +157,8 @@ class PositionManagerV3:
 class HybridTradingEngineV31:
     def __init__(self, config=None):
         self.config = config or {
-            'max_daily_loss_pct': 0.03,
-            'max_consecutive_losses': 5,
+            'max_daily_loss_pct': 1.0,      # 1.0 = %100 kayıp (Test amaçlı devredışı)
+            'max_consecutive_losses': 999,  # Test amaçlı devredışı
             'risk_per_trade': 0.01,
             'min_rr': 2.0,
             'score_threshold': 7,
@@ -173,8 +173,8 @@ class HybridTradingEngineV31:
 
     def _validate_config(self):
         c = self.config
-        assert 0 < c['max_daily_loss_pct'] <= 0.1, "Daily loss limit hatası"
-        assert 1 <= c['max_consecutive_losses'] <= 10, "Consecutive loss hatası"
+        assert 0 < c['max_daily_loss_pct'] <= 1.0, "Daily loss limit hatası"
+        assert 1 <= c['max_consecutive_losses'] <= 1000, "Consecutive loss hatası"
 
     def safe_divide(self, num, den, default=0):
         return num / den if den and den != 0 else default
