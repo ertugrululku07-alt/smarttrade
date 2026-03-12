@@ -1,18 +1,8 @@
+python -m ai.meta_labelling.meta_trainer --timeframe 1d --limit 10000 --trials 50
+python -m ai.meta_labelling.meta_trainer --timeframe 4h --limit 10000 --trials 50
+python -m ai.meta_labelling.meta_trainer --timeframe 1h --limit 10000 --trials 50
+python -m ai.meta_labelling.meta_trainer --timeframe 15m --limit 10000 --trials 50
 
-========================================
-🏆 BACKTEST RESULTS (BTC/USDT - 1h - 3000 candles)
-Total Trades: 74
-Win Rate: 33.78%
-Total PnL USD: $-14.28
-Initial Balance: $1000.0
-Final Balance: $985.72
-Avg PnL per trade: -0.10%
-========================================
+Get-ChildItem -Path . -Include __pycache__, .pytest_cache -Recurse -Directory | Remove-Item -Recurse -Force; Get-ChildItem -Path . -Filter "*.pyc" -Recurse | Remove-Item -Force
 
-Exit Reasons:
-reason
-SL          49
-TP          24
-RSI_EXIT     1
-Name: count, dtype: int64
-========================================
+Get-ChildItem -Path . -Filter "*cache*" -Recurse | Select-Object FullName

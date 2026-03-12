@@ -130,6 +130,7 @@ export default function LiveTradingPage() {
     const [closingTradeId, setClosingTradeId] = useState<string | null>(null);
     const [maxOpenTrades, setMaxOpenTrades] = useState<number | null>(null);
     const [savingSettings, setSavingSettings] = useState(false);
+    const [v3Stats, setV3Stats] = useState<any>(null);
 
     const [isMounted, setIsMounted] = useState(false);
     useEffect(() => { setIsMounted(true); }, []);
@@ -143,6 +144,12 @@ export default function LiveTradingPage() {
                 if (maxOpenTrades === null && data.max_open_trades_limit !== undefined) {
                     setMaxOpenTrades(data.max_open_trades_limit);
                 }
+            }
+
+            // Fetch V3 Stats
+            const statsRes = await fetch(getApiUrl("/live/v3/stats"));
+            if (statsRes.ok) {
+                setV3Stats(await statsRes.json());
             }
         } catch (e) {
             console.error(e);
@@ -306,6 +313,30 @@ export default function LiveTradingPage() {
                 </div>
             </div>
 
+            {/* V3.1 Performance Board */}
+            {v3Stats && v3Stats.total > 0 && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '24px' }}>
+                    <div className="glass" style={{ padding: '16px', borderRadius: '12px', border: '1px solid rgba(79, 158, 255, 0.2)', background: 'rgba(79, 158, 255, 0.03)' }}>
+                        <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--accent-blue)', textTransform: 'uppercase', marginBottom: '4px' }}>Total History</div>
+                        <div style={{ fontSize: '20px', fontWeight: 800, color: 'var(--text-primary)' }}>{v3Stats.total} <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>trades</span></div>
+                    </div>
+                    <div className="glass" style={{ padding: '16px', borderRadius: '12px', border: '1px solid rgba(0, 216, 168, 0.2)', background: 'rgba(0, 216, 168, 0.03)' }}>
+                        <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--accent-green)', textTransform: 'uppercase', marginBottom: '4px' }}>Win Rate</div>
+                        <div style={{ fontSize: '20px', fontWeight: 800, color: 'var(--accent-green)' }}>{v3Stats.win_rate}%</div>
+                    </div>
+                    <div className="glass" style={{ padding: '16px', borderRadius: '12px', border: '1px solid rgba(255, 174, 52, 0.2)', background: 'rgba(255, 174, 52, 0.03)' }}>
+                        <div style={{ fontSize: '11px', fontWeight: 700, color: '#ffae34', textTransform: 'uppercase', marginBottom: '4px' }}>Avg Risk/Reward</div>
+                        <div style={{ fontSize: '20px', fontWeight: 800, color: '#ffae34' }}>{v3Stats.avg_rr}R</div>
+                    </div>
+                    <div className="glass" style={{ padding: '16px', borderRadius: '12px', border: '1px solid rgba(255, 255, 255, 0.1)', background: 'rgba(255, 255, 255, 0.03)' }}>
+                        <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Acc. Growth</div>
+                        <div style={{ fontSize: '20px', fontWeight: 800, color: v3Stats.total_pnl_pct >= 0 ? 'var(--accent-green)' : 'var(--accent-red)' }}>
+                            {v3Stats.total_pnl_pct >= 0 ? '+' : ''}{v3Stats.total_pnl_pct}%
+                        </div>
+                    </div>
+                </div>
+            )}
+
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: '20px' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
                     {/* Open Positions */}
@@ -442,7 +473,7 @@ export default function LiveTradingPage() {
                                                     <PnLChart data={t.pnl_history} />
                                                 </div>
                                             </div>
-                                            <div style={{ textAlign: 'right', cursor: 'pointer' }} onClick={() => setSelectedTrade(t)}>
+                                            <div style={{ textAlign: 'right', cursor: 'zoom-in' }} onClick={() => setSelectedTrade(t)}>
                                                 <div style={{ fontSize: '14px', fontWeight: 700, color: t.pnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)' }}>
                                                     {`${t.pnl >= 0 ? '+' : ''}$${t.pnl !== undefined ? t.pnl.toFixed(2) : '0.00'}`}
                                                     <span style={{ fontSize: '11px', marginLeft: 4 }}>
@@ -451,6 +482,9 @@ export default function LiveTradingPage() {
                                                 </div>
                                                 <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
                                                     in: ${t.entry} out: ${t.exit}
+                                                </div>
+                                                <div style={{ fontSize: '9px', color: 'var(--accent-blue)', fontWeight: 600, marginTop: 4 }}>
+                                                    DETAILS →
                                                 </div>
                                             </div>
                                         </div>

@@ -145,7 +145,7 @@ class AdaptiveBacktest:
         # TF bazlı lookahead
         self.lookahead = self._get_lookahead(timeframe)
 
-        # ── v1.3: Debug sayaçları ────────────────────────────
+        # -- v1.3: Debug sayaclari ----------------------------
         self._debug_counts = {
             'total_steps': 0,
             'signals_generated': 0,
@@ -202,7 +202,7 @@ class AdaptiveBacktest:
                 result.equity_curve.append(capital)
                 continue
 
-            # ── Açık pozisyonları güncelle ────────────────────
+            # -- Acik pozisyonlari guncelle --------------------
             closed_indices = []
             for t_idx, trade in enumerate(open_trades):
                 outcome = self._check_trade_exit(
@@ -248,7 +248,7 @@ class AdaptiveBacktest:
             if len(open_trades) >= self.max_concurrent:
                 continue
 
-            # ── v1.5: Hybrid Decision logic ───────────────────
+            # -- v1.5: Hybrid Decision logic -------------------
             df_sec_chunk = None
             if df_secondary is not None:
                 ts = pd.Timestamp(timestamps[i])
@@ -276,7 +276,7 @@ class AdaptiveBacktest:
             if same_dir_open:
                 continue
 
-            # ── Trade aç ─────────────────────────────────────
+            # -- Trade ac -------------------------------------
             entry = closes[i]
             tp_mult = signal.tp_atr_mult
             sl_mult = signal.sl_atr_mult
@@ -315,7 +315,7 @@ class AdaptiveBacktest:
                       f"regime={regime_val} meta={meta_conf:.2f} "
                       f"size={position_size:.0%}")
 
-        # ── Açık kalan trade'leri timeout ile kapat ──────────
+        # -- Acik kalan trade'leri timeout ile kapat ----------
         for trade in open_trades:
             trade_record = self._close_trade(
                 trade, {'type': 'TIMEOUT', 'exit_price': closes[-1]},
@@ -323,7 +323,7 @@ class AdaptiveBacktest:
             )
             result.trades.append(trade_record)
 
-        # ── v1.3: Debug stats ────────────────────────────────
+        # -- v1.3: Debug stats --------------------------------
         # Engine'den debug bilgisi al (eğer AdaptiveEngine kullanıyorsak)
 
         # Sonuçları hesapla
@@ -572,9 +572,9 @@ class AdaptiveBacktest:
         return result
 
 
-# ═══════════════════════════════════════════════════════════════════
-# Çoklu Coin Backtest
-# ═══════════════════════════════════════════════════════════════════
+# ===================================================================
+# Coklu Coin Backtest
+# ===================================================================
 
 def run_full_backtest(
     symbols: Optional[List[str]] = None,
@@ -594,8 +594,8 @@ def run_full_backtest(
     if symbols is None:
         symbols = DEFAULT_SYMBOLS
 
-    print(f"\n{'═' * 65}")
-    print(f"  📊 ADAPTIVE BACKTEST v1.0")
+    print(f"\n{'=' * 65}")
+    print(f"  ADAPTIVE BACKTEST v1.0")
     print(f"  TF: {timeframe} | Coins: {len(symbols)} | "
           f"Meta-filter: {'ON' if use_meta_filter else 'OFF'}")
     print(f"{'=' * 65}\n")
@@ -629,7 +629,7 @@ def run_full_backtest(
             df = enrich_ohlcv_with_futures(df, sym, silent=True)
             df = generate_features(df)
 
-            # ── v1.5: Hybrid Data Fetching ────────────────
+            # -- v1.5: Hybrid Data Fetching ----------------
             df_1h = df.copy()
             df_15m = None
             
@@ -640,7 +640,7 @@ def run_full_backtest(
                     df_15m = add_all_indicators(df_15m)
                     df_15m = generate_features(df_15m)
             except Exception as e:
-                print(f"  ⚠️ {sym} 15m veri çekme hatası (Hybrid atlanıyor): {e}")
+                print(f"  [WARN] {sym} 15m veri cekme hatasi (Hybrid atlaniyor): {e}")
 
             # Son %30'u test olarak kullan
             test_start = int(len(df_1h) * (1 - test_split))
@@ -683,21 +683,21 @@ def run_full_backtest(
                 _time.sleep(0.25)
 
         except Exception as e:
-            print(f"  ⚠️ {sym}: {e}")
+            print(f"  [ERROR] {sym}: {e}")
             skipped.append(sym)
 
-    # ── v1.3: Engine debug stats ─────────────────────────
+    # -- v1.3: Engine debug stats -------------------------
     # Backtest engine'den strateji istatistiklerini al
     if hasattr(engine, 'strategies'):
-        print(f"\n  📊 Strateji Debug:")
+        print(f"\n  Strateji Debug:")
         print(f"     Signals generated: {sum(1 for _ in all_trades)}")
 
     if not all_trades:
-        print(f"\n  ❌ 0 trade! Olası sorunlar:")
-        print(f"     1. Stratejiler hiç sinyal üretmiyor")
-        print(f"     2. Meta-filter her şeyi reddediyor")
-        print(f"     3. Confidence eşiği çok yüksek")
-        print(f"     → --no-meta ile tekrar dene")
+        print(f"\n  [EMPTY] 0 trade! Olasi sorunlar:")
+        print(f"     1. Stratejiler hic sinyal uretmiyor")
+        print(f"     2. Meta-filter her seyi reddediyor")
+        print(f"     3. Confidence esigi cok yuksek")
+        print(f"     -> --no-meta ile tekrar dene")
         return {"error": "No trades", "debug": "Check strategy thresholds"}
 
     summary = _compute_summary(all_trades, all_results, symbols, skipped)
@@ -812,45 +812,45 @@ def _compute_summary(
 
 
 def _print_summary(summary: Dict, use_meta: bool):
-    """Sonuçları güzel formatta yazdır"""
-    meta_str = "META-FILTER ON ✅" if use_meta else "META-FILTER OFF ❌"
+    """Sonuclari guzel formatta yazdir"""
+    meta_str = "META-FILTER ON" if use_meta else "META-FILTER OFF"
 
-    print(f"\n{'═' * 65}")
-    print(f"  🏆 BACKTEST SONUÇLARI ({meta_str})")
-    print(f"{'═' * 65}")
-    print(f"  📊 Total Trades : {summary['total_trades']:,}")
-    print(f"  ✅ Winners      : {summary['winners']:,}")
-    print(f"  ❌ Losers       : {summary['losers']:,}")
-    print(f"  🎯 Win Rate     : %{summary['win_rate']}")
-    print(f"  💰 Profit Factor: {summary['profit_factor']}")
-    print(f"  📈 Total PnL    : %{summary['total_pnl_pct']} "
+    print(f"\n{'=' * 65}")
+    print(f"  BACKTEST SONUCCLARI ({meta_str})")
+    print(f"{'=' * 65}")
+    print(f"  Total Trades : {summary['total_trades']:,}")
+    print(f"  Winners      : {summary['winners']:,}")
+    print(f"  Losers       : {summary['losers']:,}")
+    print(f"  Win Rate     : %{summary['win_rate']}")
+    print(f"  Profit Factor: {summary['profit_factor']}")
+    print(f"  Total PnL    : %{summary['total_pnl_pct']} "
           f"({summary['total_pnl_atr']:.1f} ATR)")
-    print(f"  💵 Avg PnL/Trade: %{summary['avg_pnl_per_trade']:.4f}")
-    print(f"  📉 Sharpe Ratio : {summary['sharpe_ratio']}")
-    print(f"  ⏱️  Avg Hold     : {summary['avg_bars_held']:.1f} bars")
-    print(f"  🪙 Coins        : {summary['coins_traded']} / {summary['coins_total']}")
+    print(f"  Avg PnL/Trade: %{summary['avg_pnl_per_trade']:.4f}")
+    print(f"  Sharpe Ratio : {summary['sharpe_ratio']}")
+    print(f"  Avg Hold     : {summary['avg_bars_held']:.1f} bars")
+    print(f"  Coins        : {summary['coins_traded']} / {summary['coins_total']}")
 
-    print(f"\n{'─' * 55}")
-    print(f"  📊 REJİM BAZLI:")
+    print(f"\n{'-' * 55}")
+    print(f"  REJIM BAZLI:")
     for regime, data in summary['by_regime'].items():
         print(f"    {regime:16}: T={data['trades']:4} "
               f"WR=%{data['wr']:5.1f} PnL=%{data['pnl_pct']:8.2f} "
               f"({data['pnl_atr']:.1f} ATR)")
 
-    print(f"\n{'─' * 55}")
-    print(f"  📊 STRATEJİ BAZLI:")
+    print(f"\n{'-' * 55}")
+    print(f"  STRATEJI BAZLI:")
     for strat, data in summary['by_strategy'].items():
         print(f"    {strat:16}: T={data['trades']:4} "
               f"WR=%{data['wr']:5.1f} PnL=%{data['pnl_pct']:8.2f}")
 
-    print(f"\n{'─' * 55}")
-    print(f"  📊 YÖN BAZLI:")
+    print(f"\n{'-' * 55}")
+    print(f"  YON BAZLI:")
     for d, data in summary['by_direction'].items():
         print(f"    {d:16}: T={data['trades']:4} "
               f"WR=%{data['wr']:5.1f} PnL=%{data['pnl_pct']:8.2f}")
 
-    print(f"\n{'─' * 55}")
-    print(f"  📊 SONUÇ BAZLI:")
+    print(f"\n{'-' * 55}")
+    print(f"  SONUÇ BAZLI:")
     for outcome, data in summary.get('by_outcome', {}).items():
         ct = data['count']
         w = data['wins']
@@ -860,9 +860,9 @@ def _print_summary(summary: Dict, use_meta: bool):
     print(f"{'=' * 65}\n")
 
 
-# ═══════════════════════════════════════════════════════════════════
+# ===================================================================
 # A/B Test: Meta-filter ON vs OFF
-# ═══════════════════════════════════════════════════════════════════
+# ===================================================================
 
 def run_ab_test(
     symbols: Optional[List[str]] = None,
@@ -915,9 +915,9 @@ def run_ab_test(
     }
 
 
-# ═══════════════════════════════════════════════════════════════════
+# ===================================================================
 # CLI
-# ═══════════════════════════════════════════════════════════════════
+# ===================================================================
 
 if __name__ == "__main__":
     import argparse

@@ -1,42 +1,50 @@
 """
-Base Strategy — Tüm stratejilerin ana sınıfı
+Base Strategy v1.1 — Tüm stratejilerin ana sınıfı
+
+v1.1 Değişiklikler:
+  - _validate_columns helper eklendi
+  - _safe_get helper eklendi
+  - confidence clamp [0, 1]
 """
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List
 import pandas as pd
 
 
 @dataclass
 class Signal:
     """Strateji sinyali"""
-    direction: Optional[str]   # 'LONG', 'SHORT', None
-    confidence: float          # 0.0 - 1.0 (HardPass + SoftScore combined)
-    strategy_name: str         # Hangi strateji üretti
-    regime: str                # Hangi rejimde üretildi
-    reason: str                # İnsan-okunabilir neden
+    direction: Optional[str]
+    confidence: float
+    strategy_name: str
+    regime: str
+    reason: str
     entry_price: float = 0.0
-    tp_atr_mult: float = 2.0   # TP = entry ± tp_mult × ATR
-    sl_atr_mult: float = 1.3   # SL = entry ∓ sl_mult × ATR
-    
-    # --- Hard/Soft Architecture v2.0 ---
+    tp_atr_mult: float = 2.0
+    sl_atr_mult: float = 1.3
+
     hard_pass: bool = False
-    soft_score: int = 0        # 0 - 5
-    entry_type: str = "none"   # 'breakout', 'pullback', 'none'
-    tp_price: float = 0.0      # Explicit TP for Pullbacks
-    sl_price: float = 0.0      # Explicit SL for Pullbacks
+    soft_score: int = 0
+    entry_type: str = "none"
+    tp_price: float = 0.0
+    sl_price: float = 0.0
 
     @property
     def is_valid(self) -> bool:
-        # Prensip: Hard filtre geçmeli ve en az 3 soft skor olmalı
-        return self.direction is not None and self.hard_pass and self.soft_score >= 3
+        return (self.direction is not None
+                and self.hard_pass
+                and self.soft_score >= 3)
 
     def __repr__(self):
         if not self.is_valid:
-            valid_reason = "HardFail" if not self.hard_pass else f"LowScore({self.soft_score})"
-            return f"Signal(HOLD | {valid_reason} | {self.strategy_name})"
-        return (f"Signal({self.direction} | {self.entry_type} | score={self.soft_score} | "
+            if self.direction is None:
+                return f"Signal(HOLD | {self.strategy_name} | {self.reason})"
+            fail = "HardFail" if not self.hard_pass else f"LowScore({self.soft_score})"
+            return f"Signal(HOLD | {fail} | {self.strategy_name})"
+        return (f"Signal({self.direction} | {self.entry_type} | "
+                f"score={self.soft_score} | conf={self.confidence:.2f} | "
                 f"{self.strategy_name} | {self.reason})")
 
 
@@ -45,21 +53,50 @@ class BaseStrategy(ABC):
 
     name: str = "base"
     regime: str = "unknown"
-
-    # Her strateji kendi TP/SL oranlarını belirler
     default_tp_mult: float = 2.0
     default_sl_mult: float = 1.3
 
     @abstractmethod
     def generate_signal(self, df: pd.DataFrame) -> Signal:
-        """
-        DataFrame'den sinyal üret.
-        En az son 50 bar gerekli.
-        """
         pass
 
-    def _no_signal(self, reason: str = "", hard_pass: bool = False, soft_score: int = 0) -> Signal:
-        """Sinyal yok döndür"""
+    # ══════════════════════════════════════════════════
+    # v1.1 EKLENDİ: Helper Metodlar
+    # ══════════════════════════════════════════════════
+
+    def _validate_columns(self, df: pd.DataFrame,
+                          required: List[str]) -> Optional[str]:
+        """
+        Gerekli kolonları kontrol et.
+        Returns:
+            str: Eksik kolon mesajı (hata varsa)
+            None: Tüm kolonlar mevcut
+        """
+        missing = [col for col in required if col not in df.columns]
+        if missing:
+            return f"Eksik kolonlar: {missing}"
+        return None
+
+    def _safe_get(self, df: pd.DataFrame, col: str,
+                  default=None, idx: int = -1):
+        """
+        Güvenli kolon erişimi.
+        Kolon yoksa veya değer NaN ise default döndürür.
+        """
+        if col not in df.columns:
+            return default
+        val = df[col].iloc[idx]
+        if pd.isna(val):
+            return default
+        return val
+
+    # ══════════════════════════════════════════════════
+    # Signal Builders (değişmedi)
+    # ══════════════════════════════════════════════════
+
+    def _no_signal(self, reason: str = "",
+                   hard_pass: bool = False,
+                   soft_score: int = 0) -> Signal:
         return Signal(
             direction=None,
             confidence=0.0,
@@ -76,9 +113,7 @@ class BaseStrategy(ABC):
                      hard_pass: bool = True,
                      tp_price: float = 0.0,
                      sl_price: float = 0.0) -> Signal:
-        # Confidence logic: baseline 0.5 + (soft_score/10)
-        confidence = 0.5 + (soft_score / 10.0) if hard_pass else 0.0
-        
+        confidence = min(1.0, 0.5 + (soft_score / 10.0)) if hard_pass else 0.0
         return Signal(
             direction='LONG',
             confidence=confidence,
@@ -101,8 +136,7 @@ class BaseStrategy(ABC):
                       hard_pass: bool = True,
                       tp_price: float = 0.0,
                       sl_price: float = 0.0) -> Signal:
-        confidence = 0.5 + (soft_score / 10.0) if hard_pass else 0.0
-        
+        confidence = min(1.0, 0.5 + (soft_score / 10.0)) if hard_pass else 0.0
         return Signal(
             direction='SHORT',
             confidence=confidence,

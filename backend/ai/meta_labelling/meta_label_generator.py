@@ -1,50 +1,46 @@
 """
-Meta-Label Generator v1.0
+Meta-Label Generator v1.2 (Hardened)
 
 Marcos López de Prado yaklaşımı:
   1. Primary model (rule-based) sinyal üretir
   2. Sinyalin sonradan DOĞRU çıkıp çıkmadığını belirle
-  3. meta_label = 1 (sinyal doğru, TP vurdu) / 0 (sinyal yanlış, SL vurdu)
+  3. meta_label = 1 (sinyal doğru) / 0 (sinyal yanlış)
 
-Bu dosya TÜM veri üzerinde çalışarak eğitim verisi hazırlar.
+v1.2 Düzeltmeleri:
+  - use_meta_filter=False (hack yerine explicit API)
+  - Regime one-hot encoding case mismatch düzeltildi
+  - _last_signal stale data koruması (engine tarafında)
+  - generate_meta_labels_bulk verbose hatası giderildi
 """
 
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
-
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-
-from ai.regime_detector import Regime, detect_regime
-from ai.strategies import Signal
-from ai.adaptive_engine import AdaptiveEngine
+import datetime
+import time
 
 
 @dataclass
 class MetaLabelRow:
-    """Tek bir meta-label kaydı"""
+    """Tek bir meta-label kaydı için veri yapısı"""
     bar_index: int
     regime: str
-    signal_direction: str     # 'LONG' or 'SHORT'
-    signal_confidence: float
-    strategy_name: str
-    signal_reason: str
-    meta_label: int           # 1=doğru çıktı, 0=yanlış çıktı
-    outcome_type: str         # 'TP', 'SL', 'TRAIL', 'TIMEOUT'
-    pnl_atr: float            # ATR cinsinden PnL
-    bars_to_outcome: int      # Sonuca kaç bar sürdü
+    signal_direction: str
+    meta_label: int
+    outcome_type: str
+    pnl_atr: float
+    bars_to_outcome: int
 
 
 class MetaLabelGenerator:
     """
-    Tüm veri üzerinde:
-      1. Her bar'da rejim tespit et
-      2. Rejime uygun strateji ile sinyal üret
-      3. Sinyalin sonucunu simüle et (TP/SL)
-      4. meta_label oluştur
+    Strateji sinyallerinin başarısını simüle ederek Meta-Model (XGBoost) için
+    etiketli eğitim verisi üretir.
     """
+
+    # Regime enum değerleri (lowercase) — detect_regime ve engine bu formatta döndürür
+    REGIME_VALUES = ['trending', 'mean_reverting', 'high_volatile', 'low_volatile']
 
     def __init__(
         self,
@@ -58,9 +54,12 @@ class MetaLabelGenerator:
         self.regime_lookback = regime_lookback
         self.timeframe = timeframe
 
-        # ── v1.4: Engine-v1.4 ─────────────────────────────
-        self.engine = AdaptiveEngine(timeframe=timeframe)
-        self.engine.meta_predictor = None  # Filtresiz sinyal istiyoruz
+        # ✅ Fix: use_meta_filter=False ile explicit API kullanımı
+        from ai.adaptive_engine import AdaptiveEngine
+        self.engine = AdaptiveEngine(
+            timeframe=timeframe,
+            use_meta_filter=False,
+        )
 
     def generate(
         self,
@@ -69,23 +68,16 @@ class MetaLabelGenerator:
         verbose: bool = True,
     ) -> Tuple[pd.DataFrame, Dict]:
         """
-        Tüm veri üzerinde meta-label üret.
+        Tüm veri seti üzerinde gezinerek meta-label üretir.
 
         Returns:
             (meta_df, stats_dict)
-
-            meta_df kolonları:
-              - Tüm orijinal feature'lar
-              - signal_is_long: int
-              - signal_confidence: float
-              - regime_*: one-hot encoded rejim
-              - meta_label: 0/1 (hedef değişken)
-              - _regime: str (debug)
-              - _signal_dir: str (debug)
-              - _outcome: str (debug)
-              - _symbol: str
+            meta_df: DatetimeIndex korunmuş, feature + meta-label DataFrame
         """
         N = len(df)
+        if N < self.regime_lookback + self.lookahead:
+            return pd.DataFrame(), {}
+
         closes = df['close'].values
         highs = df['high'].values
         lows = df['low'].values
@@ -93,65 +85,57 @@ class MetaLabelGenerator:
 
         results = []
         stats = {
-            'total_bars': N,
             'signals_generated': 0,
-            'meta_label_1': 0,    # Doğru sinyaller
-            'meta_label_0': 0,    # Yanlış sinyaller
-            'no_signal': 0,
-            'regime_counts': {r.value: 0 for r in Regime},
-            'strategy_counts': {},
-            'by_regime': {
-                r.value: {'signals': 0, 'correct': 0, 'wrong': 0}
-                for r in Regime
-            },
+            'meta_label_1': 0,
+            'meta_label_0': 0,
+            'regime_counts': {},
+            'by_regime': {},
         }
 
-        # ── Her bar için sinyal üret ve sonucunu kontrol et ──
+        # Performans: Engine indikatörlerini bir kez ön hesapla
+        if hasattr(self.engine, 'precompute_indicators'):
+            self.engine.precompute_indicators(df)
+
+        # Sabit pencereli slice (O(N) toplam)
+        engine_lookback = max(300, self.regime_lookback)
+
         for i in range(self.regime_lookback, N - self.lookahead):
             atr_val = atrs[i]
             if np.isnan(atr_val) or atr_val < 1e-10:
                 continue
 
-            entry = closes[i]
+            # Sabit pencereli engine çağrısı
+            window_start = max(0, i - engine_lookback)
+            decision = self.engine.decide(df.iloc[window_start:i + 1])
+            regime_str = decision.regime  # "trending", "mean_reverting", vb.
 
-            # ── Katman 1: Rejim Tespiti ──────────────────────
-            window = df.iloc[max(0, i - self.regime_lookback):i + 1]
-            regime, _ = detect_regime(window, lookback=self.regime_lookback)
-            stats['regime_counts'][regime.value] += 1
+            # İstatistik güncelleme (tek kaynak, duplike yok)
+            stats['regime_counts'][regime_str] = (
+                stats['regime_counts'].get(regime_str, 0) + 1
+            )
+            if regime_str not in stats['by_regime']:
+                stats['by_regime'][regime_str] = {
+                    'signals': 0, 'correct': 0, 'wrong': 0
+                }
 
-            # ── Katman 2: v1.4 Engine Kararı ──────────────────
-            decision = self.engine.decide(df.iloc[:i + 1])
-            
-            # Rejim istatistiği güncelle
-            regime_str = decision.regime
-            stats['regime_counts'][regime_str] += 1
-            
             if decision.action == 'HOLD':
-                stats['no_signal'] += 1
                 continue
 
-            # Engine içindeki ham sinyali al
-            signal = getattr(self.engine, '_last_signal', None)
+            # Explicit Signal API
+            signal = self.engine.get_last_signal_info()
             if not signal:
-                stats['no_signal'] += 1
                 continue
 
             stats['signals_generated'] += 1
             stats['by_regime'][regime_str]['signals'] += 1
 
-            sname = signal.strategy_name
-            stats['strategy_counts'][sname] = stats['strategy_counts'].get(sname, 0) + 1
-
-            # ── Katman 3: Sinyal Sonucunu Simüle Et ──────────
-            tp_mult = signal.tp_atr_mult
-            sl_mult = signal.sl_atr_mult
-
-            outcome = self._simulate_outcome(
-                direction=signal.direction,
-                entry=entry,
+            # Conservative Outcome Simulation
+            outcome = self._simulate_outcome_conservative(
+                direction=signal['direction'],
+                entry=closes[i],
                 atr_val=atr_val,
-                tp_mult=tp_mult,
-                sl_mult=sl_mult,
+                tp_mult=signal['tp_atr_mult'],
+                sl_mult=signal['sl_atr_mult'],
                 highs=highs,
                 lows=lows,
                 closes=closes,
@@ -160,72 +144,52 @@ class MetaLabelGenerator:
             )
 
             meta_label = outcome['meta_label']
-
             if meta_label == 1:
                 stats['meta_label_1'] += 1
-                stats['by_regime'][regime.value]['correct'] += 1
+                stats['by_regime'][regime_str]['correct'] += 1
             else:
                 stats['meta_label_0'] += 1
-                stats['by_regime'][regime.value]['wrong'] += 1
+                stats['by_regime'][regime_str]['wrong'] += 1
 
-            # ── Sonuç kaydı ──────────────────────────────────
+            # ✅ Fix: One-hot encoding — REGIME_VALUES ile tutarlı (lowercase)
             results.append({
                 '_bar_index': i,
                 '_regime': regime_str,
-                '_signal_dir': signal.direction,
-                '_signal_conf': signal.confidence,
-                '_strategy': signal.strategy_name,
-                '_reason': signal.reason,
                 '_outcome': outcome['type'],
                 '_pnl_atr': outcome['pnl_atr'],
                 '_bars_to_outcome': outcome['bars'],
-                '_symbol': symbol,
-                # Meta features
-                'signal_is_long': int(signal.direction == 'LONG'),
-                'signal_confidence': signal.confidence,
-                'regime_trending': int(regime_str == Regime.TRENDING.value),
-                'regime_mean_rev': int(regime_str == Regime.MEAN_REVERTING.value),
-                'regime_high_vol': int(regime_str == Regime.HIGH_VOLATILE.value),
-                'regime_low_vol': int(regime_str == Regime.LOW_VOLATILE.value),
-                # Hedef
+                'signal_is_long': int(signal['direction'] == 'LONG'),
+                'signal_confidence': signal['confidence'],
                 'meta_label': meta_label,
+                **{
+                    f"regime_{rv}": int(regime_str == rv)
+                    for rv in self.REGIME_VALUES
+                },
             })
 
         if not results:
-            if verbose:
-                print(f"   ⚠️ {symbol}: Hiç sinyal üretilemedi")
             return pd.DataFrame(), stats
 
-        # ── Results'ı DataFrame'e çevir ──────────────────────
+        # DatetimeIndex'i koru (WFV Trainer uyumluluğu)
         results_df = pd.DataFrame(results)
+        indices = results_df['_bar_index'].values
 
-        # Orijinal feature'ları ekle
-        feature_rows = []
-        for _, row in results_df.iterrows():
-            idx = int(row['_bar_index'])
-            feat_row = df.iloc[idx].to_dict()
-            feature_rows.append(feat_row)
+        # Orijinal DatetimeIndex'i taşıyan feature satırları
+        features_df = df.iloc[indices].copy()
+        original_dt_index = features_df.index
 
-        features_df = pd.DataFrame(feature_rows, index=results_df.index)
+        # results_df'e aynı DatetimeIndex'i ata
+        results_df.index = original_dt_index
 
         # Birleştir
         meta_df = pd.concat([features_df, results_df], axis=1)
 
-        # ── Debug Log ────────────────────────────────────────
         if verbose:
-            total_sig = stats['signals_generated']
-            correct = stats['meta_label_1']
-            wrong = stats['meta_label_0']
-            wr = correct / total_sig * 100 if total_sig > 0 else 0
-
-            print(f"   📊 {symbol}: Signals={total_sig} | "
-                  f"Correct={correct} Wrong={wrong} | "
-                  f"Raw WR=%{wr:.1f} | "
-                  f"Regimes: {stats['regime_counts']}")
+            self._print_report(symbol, stats)
 
         return meta_df, stats
 
-    def _simulate_outcome(
+    def _simulate_outcome_conservative(
         self,
         direction: str,
         entry: float,
@@ -239,62 +203,67 @@ class MetaLabelGenerator:
         N: int,
     ) -> Dict:
         """
-        Sinyalin TP/SL sonucunu simüle et.
-
-        Returns:
-            {
-                'meta_label': 0 or 1,
-                'type': 'TP', 'SL', 'TRAIL', 'TIMEOUT',
-                'pnl_atr': float,
-                'bars': int,
-            }
+        Conservative simülasyon:
+        - Trailing stop desteği
+        - Aynı bar'da hem TP hem SL varsa gerçek PnL'ye göre karar verir
         """
         if direction == 'LONG':
             tp_price = entry + atr_val * tp_mult
             sl_price = entry - atr_val * sl_mult
-        else:  # SHORT
+        else:
             tp_price = entry - atr_val * tp_mult
             sl_price = entry + atr_val * sl_mult
 
-        # Trailing stop state
-        best_price = entry
-        trail_sl = sl_price
         trail_activated = False
+        trail_sl = sl_price
+        best_price = entry
 
         for j in range(1, self.lookahead + 1):
             idx = start_idx + j
             if idx >= N:
                 break
 
-            h = highs[idx]
-            lo = lows[idx]
-            c = closes[idx]
+            h, lo = highs[idx], lows[idx]
 
             if direction == 'LONG':
-                # Track best price
-                if h > best_price:
-                    best_price = h
+                best_price = max(best_price, h)
 
                 # Trailing stop activation
-                trail_level = entry + (tp_price - entry) * self.trail_activation
-                if best_price >= trail_level and not trail_activated:
+                trail_level = (
+                    entry + (tp_price - entry) * self.trail_activation
+                )
+                if not trail_activated and best_price >= trail_level:
                     trail_activated = True
 
                 if trail_activated:
                     new_trail = best_price - atr_val * sl_mult
                     trail_sl = max(trail_sl, new_trail)
-                    if lo <= trail_sl:
-                        # Trail stop hit — kârlı çıkış
-                        pnl = (trail_sl - entry) / atr_val
-                        return {
-                            'meta_label': 1 if pnl > 0 else 0,
-                            'type': 'TRAIL',
-                            'pnl_atr': round(pnl, 4),
-                            'bars': j,
-                        }
 
-                # Normal TP
-                if h >= tp_price:
+                # Aktif stop seviyesi
+                active_sl = trail_sl if trail_activated else sl_price
+
+                # Hit detection
+                sl_hit = lo <= active_sl
+                tp_hit = h >= tp_price
+
+                # Ambiguous: Gerçek PnL'ye göre karar
+                if sl_hit and tp_hit:
+                    actual_pnl = (active_sl - entry) / atr_val
+                    return {
+                        'meta_label': 1 if actual_pnl > 0 else 0,
+                        'type': 'AMBIGUOUS',
+                        'pnl_atr': round(actual_pnl, 4),
+                        'bars': j,
+                    }
+                if sl_hit:
+                    actual_pnl = (active_sl - entry) / atr_val
+                    return {
+                        'meta_label': 1 if actual_pnl > 0 else 0,
+                        'type': 'TRAIL_STOP' if trail_activated else 'SL',
+                        'pnl_atr': round(actual_pnl, 4),
+                        'bars': j,
+                    }
+                if tp_hit:
                     return {
                         'meta_label': 1,
                         'type': 'TP',
@@ -302,36 +271,41 @@ class MetaLabelGenerator:
                         'bars': j,
                     }
 
-                # Normal SL
-                if lo <= sl_price:
-                    return {
-                        'meta_label': 0,
-                        'type': 'SL',
-                        'pnl_atr': round(-sl_mult, 4),
-                        'bars': j,
-                    }
-
             else:  # SHORT
-                if lo < best_price:
-                    best_price = lo
+                best_price = min(best_price, lo)
 
-                trail_level = entry - (entry - tp_price) * self.trail_activation
-                if best_price <= trail_level and not trail_activated:
+                trail_level = (
+                    entry - (entry - tp_price) * self.trail_activation
+                )
+                if not trail_activated and best_price <= trail_level:
                     trail_activated = True
 
                 if trail_activated:
                     new_trail = best_price + atr_val * sl_mult
                     trail_sl = min(trail_sl, new_trail)
-                    if h >= trail_sl:
-                        pnl = (entry - trail_sl) / atr_val
-                        return {
-                            'meta_label': 1 if pnl > 0 else 0,
-                            'type': 'TRAIL',
-                            'pnl_atr': round(pnl, 4),
-                            'bars': j,
-                        }
 
-                if lo <= tp_price:
+                active_sl = trail_sl if trail_activated else sl_price
+
+                sl_hit = h >= active_sl
+                tp_hit = lo <= tp_price
+
+                if sl_hit and tp_hit:
+                    actual_pnl = (entry - active_sl) / atr_val
+                    return {
+                        'meta_label': 1 if actual_pnl > 0 else 0,
+                        'type': 'AMBIGUOUS',
+                        'pnl_atr': round(actual_pnl, 4),
+                        'bars': j,
+                    }
+                if sl_hit:
+                    actual_pnl = (entry - active_sl) / atr_val
+                    return {
+                        'meta_label': 1 if actual_pnl > 0 else 0,
+                        'type': 'TRAIL_STOP' if trail_activated else 'SL',
+                        'pnl_atr': round(actual_pnl, 4),
+                        'bars': j,
+                    }
+                if tp_hit:
                     return {
                         'meta_label': 1,
                         'type': 'TP',
@@ -339,27 +313,28 @@ class MetaLabelGenerator:
                         'bars': j,
                     }
 
-                if h >= sl_price:
-                    return {
-                        'meta_label': 0,
-                        'type': 'SL',
-                        'pnl_atr': round(-sl_mult, 4),
-                        'bars': j,
-                    }
-
-        # Timeout — son kapanışa göre
+        # Timeout
         final_close = closes[min(start_idx + self.lookahead, N - 1)]
         if direction == 'LONG':
-            pnl = (final_close - entry) / atr_val
+            pnl_atr = (final_close - entry) / atr_val
         else:
-            pnl = (entry - final_close) / atr_val
+            pnl_atr = (entry - final_close) / atr_val
 
         return {
-            'meta_label': 1 if pnl > 0 else 0,
+            'meta_label': 1 if pnl_atr > 0.2 else 0,
             'type': 'TIMEOUT',
-            'pnl_atr': round(pnl, 4),
+            'pnl_atr': round(pnl_atr, 4),
             'bars': self.lookahead,
         }
+
+    def _print_report(self, symbol: str, stats: Dict):
+        total = stats['signals_generated']
+        correct = stats['meta_label_1']
+        wr = (correct / total * 100) if total > 0 else 0
+        print(
+            f" 📊 {symbol}: Signals={total} | "
+            f"WR=%{wr:.1f} | Regimes={stats['regime_counts']}"
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -368,90 +343,57 @@ class MetaLabelGenerator:
 
 def generate_meta_labels_bulk(
     all_dfs: Dict[str, pd.DataFrame],
-    lookahead: int = 16,
-    trail_activation: float = 0.6,
-    verbose: bool = True,
+    timeframe: str = "1h",
+    **kwargs,
 ) -> Tuple[pd.DataFrame, Dict]:
     """
     Birden fazla coin için meta-label üret.
 
     Args:
         all_dfs: {symbol: df} dict'i (feature'ları hesaplanmış)
+        timeframe: Zaman dilimi
+        **kwargs: MetaLabelGenerator'a iletilecek ek parametreler + verbose flag'i
 
     Returns:
         (combined_meta_df, combined_stats)
     """
-    generator = MetaLabelGenerator(
-        lookahead=lookahead,
-        trail_activation=trail_activation,
-    )
+    # ✅ Fix: verbose parametresini MetaLabelGenerator'a gitmeden ayıklıyoruz
+    verbose = kwargs.pop('verbose', True)
+    generator = MetaLabelGenerator(timeframe=timeframe, **kwargs)
 
-    all_meta_dfs = []
+    all_results = []
     combined_stats = {
         'total_signals': 0,
         'total_correct': 0,
         'total_wrong': 0,
         'coins_processed': 0,
         'coins_skipped': 0,
-        'by_regime': {r.value: {'signals': 0, 'correct': 0, 'wrong': 0}
-                      for r in Regime},
     }
 
     for symbol, df in all_dfs.items():
         try:
+            # ✅ Fix: verbose flag'ini generate metoduna güvenli bir şekilde gönderiyoruz
             meta_df, stats = generator.generate(df, symbol=symbol, verbose=verbose)
 
             if meta_df.empty:
                 combined_stats['coins_skipped'] += 1
                 continue
 
-            all_meta_dfs.append(meta_df)
+            meta_df['_symbol'] = symbol
+            all_results.append(meta_df)
+
             combined_stats['coins_processed'] += 1
             combined_stats['total_signals'] += stats['signals_generated']
             combined_stats['total_correct'] += stats['meta_label_1']
             combined_stats['total_wrong'] += stats['meta_label_0']
 
-            for regime_val in [r.value for r in Regime]:
-                for key in ['signals', 'correct', 'wrong']:
-                    combined_stats['by_regime'][regime_val][key] += \
-                        stats['by_regime'][regime_val][key]
-
         except Exception as e:
-            print(f"   ⚠️ {symbol} meta-label hatası: {e}")
+            print(f" ⚠️ {symbol} meta-label error: {e}")
             combined_stats['coins_skipped'] += 1
 
-    if not all_meta_dfs:
+    if not all_results:
         return pd.DataFrame(), combined_stats
 
-    combined_df = pd.concat(all_meta_dfs, ignore_index=True)
-
-    # ── Özet Rapor ───────────────────────────────────────────
-    if verbose:
-        total = combined_stats['total_signals']
-        correct = combined_stats['total_correct']
-        wrong = combined_stats['total_wrong']
-        wr = correct / total * 100 if total > 0 else 0
-
-        print(f"\n{'─' * 55}")
-        print(f"  📊 META-LABEL ÖZETİ")
-        print(f"{'─' * 55}")
-        print(f"  Coins     : {combined_stats['coins_processed']} "
-              f"(skipped: {combined_stats['coins_skipped']})")
-        print(f"  Signals   : {total:,}")
-        print(f"  Correct   : {correct:,} (%{wr:.1f})")
-        print(f"  Wrong     : {wrong:,} (%{100 - wr:.1f})")
-        print(f"  Raw WR    : %{wr:.1f}")
-        print(f"{'─' * 55}")
-
-        for regime_val in [r.value for r in Regime]:
-            rd = combined_stats['by_regime'][regime_val]
-            rs = rd['signals']
-            rc = rd['correct']
-            rw = rd['wrong']
-            rwr = rc / rs * 100 if rs > 0 else 0
-            print(f"  {regime_val:16}: Sig={rs:,} "
-                  f"WR=%{rwr:.1f} (C={rc} W={rw})")
-
-        print(f"{'─' * 55}\n")
+    combined_df = pd.concat(all_results, ignore_index=False)
 
     return combined_df, combined_stats

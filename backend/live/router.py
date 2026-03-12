@@ -49,6 +49,11 @@ def update_quant_settings(req: QuantSettingsRequest):
     """Auto-Trader ayarlarını günceller."""
     return quant_trader.update_settings(req.max_open_trades)
 
+@router.get("/v3/stats")
+def get_v3_stats():
+    """V3.1 Engine performans istatistiklerini (Win Rate, Avg RR) döndürür."""
+    return quant_trader.engine_v3.logger.get_stats()
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Standard Bot Placeholders (Frontend 404 Fix)
 # ─────────────────────────────────────────────────────────────────────────────

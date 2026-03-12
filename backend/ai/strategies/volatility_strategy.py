@@ -53,8 +53,8 @@ class VolatilityStrategy(BaseStrategy):
         # Range üstü kırılım + volume spike + BOS
         if (c > high_20 * 0.998 and vol_ratio > 2.0 and bos_bull):
             return self._long_signal(
-                confidence=0.80,
-                reason=f"Breakout↑: Close>{high_20:.2f} Vol={vol_ratio:.1f}x BOS✓",
+                soft_score=4,
+                reason=f"Breakout^: Close>{high_20:.2f} Vol={vol_ratio:.1f}x BOSv",
                 entry_price=c,
             )
 
@@ -62,8 +62,8 @@ class VolatilityStrategy(BaseStrategy):
         if (vol_ratio > 2.5 and macd_hist > 0 and rsi > 55
                 and c > df['ema9'].iloc[-1]):
             return self._long_signal(
-                confidence=0.65,
-                reason=f"Volume spike↑: Vol={vol_ratio:.1f}x MACD+ RSI={rsi:.0f}",
+                soft_score=3,
+                reason=f"Volume spike^: Vol={vol_ratio:.1f}x MACD+ RSI={rsi:.0f}",
                 entry_price=c,
             )
 
@@ -73,16 +73,16 @@ class VolatilityStrategy(BaseStrategy):
 
         if (c < low_20 * 1.002 and vol_ratio > 2.0 and bos_bear):
             return self._short_signal(
-                confidence=0.80,
-                reason=f"Breakout↓: Close<{low_20:.2f} Vol={vol_ratio:.1f}x BOS✓",
+                soft_score=4,
+                reason=f"Breakoutv: Close<{low_20:.2f} Vol={vol_ratio:.1f}x BOSv",
                 entry_price=c,
             )
 
         if (vol_ratio > 2.5 and macd_hist < 0 and rsi < 45
                 and c < df['ema9'].iloc[-1]):
             return self._short_signal(
-                confidence=0.65,
-                reason=f"Volume spike↓: Vol={vol_ratio:.1f}x MACD- RSI={rsi:.0f}",
+                soft_score=3,
+                reason=f"Volume spikev: Vol={vol_ratio:.1f}x MACD- RSI={rsi:.0f}",
                 entry_price=c,
             )
 

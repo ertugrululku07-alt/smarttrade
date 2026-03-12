@@ -1,8 +1,15 @@
 """
-Momentum Strategy v1.0 (Original)
+Momentum Strategy v1.1
 
 Rejim: TRENDING
-Mantık: Trend yönünde güçlü kırılımları yakala
+
+v1.1 Değişiklikler:
+  - ✅ SHORT sinyal eklendi (kritik bug fix)
+  - ✅ Pullback TP/SL look-ahead bias düzeltildi (.shift(1))
+  - ✅ Soft score yön-bağımlı hale getirildi
+  - ✅ Kolon güvenliği eklendi
+  - ✅ Hard filter SHORT breakout/pullback eklendi
+  - ✅ NaN koruması eklendi
 """
 
 import pandas as pd
@@ -21,82 +28,192 @@ class MomentumStrategy(BaseStrategy):
         if len(df) < 50:
             return self._no_signal("Yetersiz veri")
 
-        # --- Data Extraction ---
-        last_row = df.iloc[-1]
-        prev_row = df.iloc[-2]
-        c = last_row['close']
-        h = last_row['high']
-        l = last_row['low']
-        o = last_row['open']
-        atr = last_row['atr']
-        rsi = last_row['rsi']
-        adx = last_row['adx']
-        ema9 = last_row['ema9']
-        ema21 = last_row['ema21']
-        ema50 = last_row['ema50']
-        vol = last_row['volume']
-        vol_ma = df['volume'].rolling(20).mean().iloc[-1]
-        
-        # --- HARD FILTERS (Mandatory) ---
-        # 1. No Nuke: Son mum aşırı büyük mü? (Volatility Spike Protect)
-        hard1_noNuke = (h - l) < 3.5 * atr
-        
-        # 2. Volume Alive: Hacim ölü mü?
-        hard2_volAlive = vol > vol_ma * 0.4
-        
-        # 3. Market Structure / Trend Direction
-        is_breakout = (c > prev_row['high']) and (vol > vol_ma * 1.2)
-        is_pullback = (c > ema50) and (l <= ema9 * 1.01) # EMA9 civarına çekilme (Pullback)
-        
-        hard4_trendDir = is_breakout or is_pullback
-        
-        hard_pass = hard1_noNuke and hard2_volAlive and hard4_trendDir
-        
-        if not hard_pass:
-            reason = "HardFail: "
-            if not hard1_noNuke: reason += "Nuke;"
-            if not hard2_volAlive: reason += "VolDead;"
-            if not hard4_trendDir: reason += "NoBO/PB;"
-            return self._no_signal(reason, hard_pass=False)
+        # ── Kolon Güvenliği ──────────────────────────────
+        required = ['close', 'high', 'low', 'open', 'volume',
+                     'atr', 'rsi', 'adx', 'ema9', 'ema21', 'ema50',
+                     'di_plus', 'di_minus']
+        col_err = self._validate_columns(df, required)
+        if col_err:
+            return self._no_signal(col_err)
 
-        # --- SOFT FILTERS (Scoring 0-5) ---
+        # ── Data Extraction ─────────────────────────────
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+        c = last['close']
+        h = last['high']
+        lo = last['low']
+        o = last['open']
+        atr = last['atr']
+        rsi = last['rsi']
+        adx = last['adx']
+        ema9 = last['ema9']
+        ema21 = last['ema21']
+        ema50 = last['ema50']
+        vol = last['volume']
+        di_plus = last['di_plus']
+        di_minus = last['di_minus']
+
+        # ATR koruması
+        if pd.isna(atr) or atr < 1e-10:
+            return self._no_signal("ATR geçersiz")
+
+        vol_ma = df['volume'].rolling(20, min_periods=5).mean().iloc[-1]
+        if pd.isna(vol_ma) or vol_ma < 1e-10:
+            vol_ma = vol  # Fallback
+
+        # ════════════════════════════════════════════════
+        # HARD FILTERS
+        # ════════════════════════════════════════════════
+
+        # H1: No Nuke — aşırı büyük mum koruması
+        hard1_noNuke = (h - lo) < 3.5 * atr
+
+        # H2: Volume Alive — ölü piyasa koruması
+        hard2_volAlive = vol > vol_ma * 0.4
+
+        # H3: Breakout veya Pullback tespit (çift yönlü)
+        is_breakout_bull = (c > prev['high']) and (vol > vol_ma * 1.2)
+        is_breakout_bear = (c < prev['low']) and (vol > vol_ma * 1.2)
+        is_pullback_bull = (c > ema50) and (lo <= ema9 * 1.01)
+        is_pullback_bear = (c < ema50) and (h >= ema9 * 0.99)
+
+        has_bull_setup = is_breakout_bull or is_pullback_bull
+        has_bear_setup = is_breakout_bear or is_pullback_bear
+
+        hard4_trendDir = has_bull_setup or has_bear_setup
+
+        hard_pass = hard1_noNuke and hard2_volAlive and hard4_trendDir
+
+        if not hard_pass:
+            reasons = []
+            if not hard1_noNuke:
+                reasons.append("Nuke")
+            if not hard2_volAlive:
+                reasons.append("VolDead")
+            if not hard4_trendDir:
+                reasons.append("NoBO/PB")
+            return self._no_signal(
+                f"HardFail: {';'.join(reasons)}",
+                hard_pass=False
+            )
+
+        # ════════════════════════════════════════════════
+        # YÖN BELİRLEME
+        # ════════════════════════════════════════════════
+        bull_bias = (c > ema50) and (di_plus > di_minus)
+        bear_bias = (c < ema50) and (di_minus > di_plus)
+
+        # ════════════════════════════════════════════════
+        # SOFT FILTERS (yön-bağımlı)
+        # ════════════════════════════════════════════════
         soft_score = 0
-        
-        # S1: EMA Stretch (Aşırı uzama kontrolü)
-        ema_dist_pct = abs(c - ema21) / ema21 * 100
-        if ema_dist_pct < 2.0: soft_score += 1
-        
-        # S2: RSI Zone (Giriş için ideal bölge)
-        if 42 <= rsi <= 68: soft_score += 1
-        
-        # S3: Candle Range (Sakin mumlar)
-        if (h - l) < 2.0 * atr: soft_score += 1
-        
-        # S4: ADX Strength
-        if adx > 22: soft_score += 1
-        
-        # S5: Volume Flow (Artan hacim)
-        if vol > prev_row['volume']: soft_score += 1
-        
-        # --- Entry Type Logic ---
-        entry_type = "breakout" if is_breakout else "pullback"
-        
-        # LONG Direction Check
-        if c > ema50 and last_row['di_plus'] > last_row['di_minus']:
-            # Pullback ise TP/SL daha sıkı (swing bazlı) set edilebilir
+        ema_dist_pct = abs(c - ema21) / ema21 * 100 if ema21 != 0 else 0
+
+        if bull_bias:
+            # S1: EMA Stretch — aşırı uzama yok
+            if ema_dist_pct < 2.0:
+                soft_score += 1
+            # S2: RSI ideal LONG bölgesi
+            if 42 <= rsi <= 68:
+                soft_score += 1
+            # S3: Candle range makul
+            if (h - lo) < 2.0 * atr:
+                soft_score += 1
+            # S4: ADX güçlü trend
+            if adx > 22:
+                soft_score += 1
+            # S5: Artan hacim
+            if vol > prev['volume']:
+                soft_score += 1
+
+        elif bear_bias:
+            # S1: EMA Stretch
+            if ema_dist_pct < 2.0:
+                soft_score += 1
+            # S2: RSI ideal SHORT bölgesi
+            if 32 <= rsi <= 58:
+                soft_score += 1
+            # S3: Candle range makul
+            if (h - lo) < 2.0 * atr:
+                soft_score += 1
+            # S4: ADX güçlü trend
+            if adx > 22:
+                soft_score += 1
+            # S5: Artan hacim
+            if vol > prev['volume']:
+                soft_score += 1
+
+        # ════════════════════════════════════════════════
+        # LONG SİNYAL
+        # ════════════════════════════════════════════════
+        if bull_bias and has_bull_setup:
+            entry_type = "breakout" if is_breakout_bull else "pullback"
             tp_price = 0.0
             sl_price = 0.0
+
             if entry_type == "pullback":
-                tp_price = df['high'].rolling(10).max().iloc[-1] # Son 10 bar zirvesi
-                sl_price = df['low'].rolling(10).min().iloc[-1]  # Son 10 bar dibi
-            
+                # Look-ahead bias fix: .shift(1)
+                tp_raw = df['high'].shift(1).rolling(
+                    10, min_periods=3
+                ).max().iloc[-1]
+                sl_raw = df['low'].shift(1).rolling(
+                    10, min_periods=3
+                ).min().iloc[-1]
+
+                tp_price = tp_raw if (
+                    not pd.isna(tp_raw) and tp_raw > c
+                ) else c + self.default_tp_mult * atr
+
+                sl_price = sl_raw if (
+                    not pd.isna(sl_raw) and sl_raw < c
+                ) else c - self.default_sl_mult * atr
+
             return self._long_signal(
                 soft_score=soft_score,
-                reason=f"Score={soft_score}/5 | {entry_type}",
+                reason=f"LONG {entry_type} | Score={soft_score}/5 | "
+                       f"RSI={rsi:.0f} ADX={adx:.0f}",
                 entry_price=c,
                 entry_type=entry_type,
                 tp_price=tp_price,
                 sl_price=sl_price
             )
-            
-        return self._no_signal(f"Trend direction mismatch", hard_pass=True, soft_score=soft_score)
+
+        # ════════════════════════════════════════════════
+        # SHORT SİNYAL (v1.1 — YENİ)
+        # ════════════════════════════════════════════════
+        if bear_bias and has_bear_setup:
+            entry_type = "breakout" if is_breakout_bear else "pullback"
+            tp_price = 0.0
+            sl_price = 0.0
+
+            if entry_type == "pullback":
+                tp_raw = df['low'].shift(1).rolling(
+                    10, min_periods=3
+                ).min().iloc[-1]
+                sl_raw = df['high'].shift(1).rolling(
+                    10, min_periods=3
+                ).max().iloc[-1]
+
+                tp_price = tp_raw if (
+                    not pd.isna(tp_raw) and tp_raw < c
+                ) else c - self.default_tp_mult * atr
+
+                sl_price = sl_raw if (
+                    not pd.isna(sl_raw) and sl_raw > c
+                ) else c + self.default_sl_mult * atr
+
+            return self._short_signal(
+                soft_score=soft_score,
+                reason=f"SHORT {entry_type} | Score={soft_score}/5 | "
+                       f"RSI={rsi:.0f} ADX={adx:.0f}",
+                entry_price=c,
+                entry_type=entry_type,
+                tp_price=tp_price,
+                sl_price=sl_price
+            )
+
+        return self._no_signal(
+            f"Trend direction mismatch | RSI={rsi:.0f} ADX={adx:.0f}",
+            hard_pass=True,
+            soft_score=soft_score
+        )
