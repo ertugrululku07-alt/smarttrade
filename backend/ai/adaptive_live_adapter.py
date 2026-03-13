@@ -72,6 +72,14 @@ def _ensure_features(df: pd.DataFrame, symbol: str = "") -> pd.DataFrame:
             print(f"  ERROR: Feature hesaplama hatasi ({symbol}): {e}")
             # generate_features başarısız olsa bile indikatörler var
             # Stratejiler çalışabilir
+
+    # Meta-context features (meta-predictor için)
+    if 'trend_duration' not in df.columns:
+        try:
+            from backtest.signals import add_meta_context_features
+            df = add_meta_context_features(df)
+        except Exception:
+            pass
     
     # Futures data (opsiyonel, hata verirse geç)
     if 'funding_rate' not in df.columns:
@@ -87,6 +95,7 @@ def _ensure_features(df: pd.DataFrame, symbol: str = "") -> pd.DataFrame:
 def generate_signal(
     df: pd.DataFrame,
     df_secondary: Optional[pd.DataFrame] = None,
+    df_4h: Optional[pd.DataFrame] = None,
     symbol: str = "UNKNOWN",
     timeframe: str = "1h",
     secondary_tf: str = "15m",
@@ -114,7 +123,7 @@ def generate_signal(
         
         # ── Engine'e gönder (Hybrid) ──────────────────────────
         engine = _get_engine(timeframe, secondary_tf)
-        decision = engine.decide(df, df_secondary=df_secondary)
+        decision = engine.decide(df, df_secondary=df_secondary, df_4h=df_4h, symbol=symbol)
         
         if decision.action in ('LONG', 'SHORT'):
             _signal_stats['signals_generated'] += 1
@@ -140,6 +149,10 @@ def generate_signal(
                          if decision.primary_signal else 'none'),
             'meta_confidence': round(decision.meta_confidence, 4),
             'reason': decision.reason,
+            'soft_score': decision.soft_score,
+            'entry_type': decision.entry_type,
+            'tp_price': decision.tp_price,
+            'sl_price': decision.sl_price,
         }
 
     except Exception as e:

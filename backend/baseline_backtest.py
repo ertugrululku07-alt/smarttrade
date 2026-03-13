@@ -11,7 +11,7 @@ from backtest.data_fetcher import DataFetcher
 from backtest.signals import add_all_indicators, generate_signals
 
 def run_baseline_backtest(symbol="BTC/USDT", timeframe="1h", limit=3000):
-    print(f"📡 Fetching {limit} candles for Baseline...")
+    print(f"[NET] Fetching {limit} candles for Baseline...")
     fetcher = DataFetcher('binance')
     df = fetcher.fetch_ohlcv(symbol, timeframe, limit=limit)
     # fetcher.close()

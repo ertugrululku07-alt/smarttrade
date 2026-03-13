@@ -2,9 +2,9 @@ import sys
 import os
 
 print("\n" + "="*50)
-print("🚀 SMARTTRADE BACKEND STARTING (ENTRY POINT)")
-print(f"📍 Python Path: {sys.path}")
-print(f"📂 CWD: {os.getcwd()}")
+print("[START] SMARTTRADE BACKEND STARTING (ENTRY POINT)")
+print(f"[*] Python Path: {sys.path}")
+print(f"[*] CWD: {os.getcwd()}")
 print("="*50 + "\n")
 
 from fastapi import FastAPI
@@ -15,19 +15,19 @@ from contextlib import asynccontextmanager
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    print("🚀 SmartTrade AI Platform Başlıyor...")
+    print("[START] SmartTrade AI Platform Başlıyor...")
     try:
         # Check if modules are loaded
         if "models" in globals() or "models" in locals():
             import models
             from database import engine
             models.Base.metadata.create_all(bind=engine)
-            print("✅ Veritabanı tabloları hazır.")
+            print("[OK] Veritabanı tabloları hazır.")
     except Exception as e:
-        print(f"❌ Veritabanı başlatma hatası (ama uygulama devam ediyor): {e}")
+        print(f"[FAIL] Veritabanı başlatma hatası (ama uygulama devam ediyor): {e}")
     yield
     # Shutdown
-    print("🛑 SmartTrade AI Platform Kapanıyor...")
+    print("[STOP] SmartTrade AI Platform Kapanıyor...")
 
 # 2. Define app with lifespan
 app = FastAPI(
@@ -66,6 +66,6 @@ try:
     app.include_router(backtest_router)
     app.include_router(live_router)
     app.include_router(ai_router)
-    print("✅ All modules imported and routers attached.")
+    print("[OK] All modules imported and routers attached.")
 except Exception as e:
-    print(f"❌ MODULE IMPORT ERROR: {e}")
+    print(f"[FAIL] MODULE IMPORT ERROR: {e}")

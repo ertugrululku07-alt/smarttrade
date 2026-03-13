@@ -158,6 +158,47 @@ def ema_cross(
     return cross
 
 
+def vwap(df: pd.DataFrame) -> pd.Series:
+    """
+    VWAP — Volume Weighted Average Price.
+    Intraday kurumsal referans fiyat. Fiyat VWAP ustundeyse bullish,
+    altindaysa bearish baski var demektir.
+    """
+    typical = (df['high'] + df['low'] + df['close']) / 3
+    cum_tp_vol = (typical * df['volume']).cumsum()
+    cum_vol = df['volume'].cumsum().replace(0, np.nan)
+    return cum_tp_vol / cum_vol
+
+
+def cumulative_volume_delta(df: pd.DataFrame) -> pd.Series:
+    """
+    CVD — Cumulative Volume Delta (Tahmini).
+    Her mumda alici / satici hacmini tahmin eder.
+    Bullish mum -> volume pozitif, bearish -> negatif.
+    Wick oranina gore agirliklandirilir.
+    """
+    body = (df['close'] - df['open']).abs()
+    full_range = (df['high'] - df['low']).replace(0, np.nan)
+    # Mumun ne kadarinin alici tarafinda oldugu
+    if 'close' in df.columns and 'low' in df.columns:
+        buy_ratio = (df['close'] - df['low']) / full_range
+    else:
+        buy_ratio = 0.5
+    buy_ratio = buy_ratio.clip(0, 1).fillna(0.5)
+    delta = df['volume'] * (2 * buy_ratio - 1)
+    return delta.cumsum()
+
+
+def on_balance_volume(close: pd.Series, volume: pd.Series) -> pd.Series:
+    """
+    OBV — On Balance Volume.
+    Fiyat yukseldigi barlarda hacim eklenir, dustugu barlarda cikarilir.
+    Gizli talep/arz tespiti.
+    """
+    direction = np.sign(close.diff()).fillna(0)
+    return (volume * direction).cumsum()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # ICT / SMC Concepts (Phase 12)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -307,7 +348,7 @@ def add_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
     _dm_plus_raw = (high - high.shift(1)).clip(lower=0)
     _dm_minus_raw = (low.shift(1) - low).clip(lower=0)
 
-    # ✅ Fix: Hangisi büyükse o geçerli, diğeri sıfırlanır
+    # [OK] Fix: Hangisi büyükse o geçerli, diğeri sıfırlanır
     _dm_plus = _dm_plus_raw.where(_dm_plus_raw > _dm_minus_raw, 0)
     _dm_minus = _dm_minus_raw.where(_dm_minus_raw > _dm_plus_raw, 0)
 
@@ -359,17 +400,276 @@ def add_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # ADX Acceleration — Trend ivmesi
     df['adx_accel'] = df['adx'].diff(3)
 
+    # ── ATR Rank (Regime Detector icin) ──────────────────────
+    _atr_series = df['atr']
+    df['atr_rank_50'] = _atr_series.rolling(50, min_periods=10).apply(
+        lambda x: pd.Series(x).rank(pct=True).iloc[-1], raw=False
+    )
+
+    # ── VWAP & Distance ──────────────────────────────────────
+    df['vwap'] = vwap(df)
+    df['vwap_dist'] = (close - df['vwap']) / df['vwap'].replace(0, np.nan)
+
+    # ── CVD (Cumulative Volume Delta) ────────────────────────
+    df['cvd'] = cumulative_volume_delta(df)
+
+    # ── OBV (On Balance Volume) ──────────────────────────────
+    df['obv'] = on_balance_volume(close, vol)
+
+    # ── BOS Detection (Break of Structure) ───────────────────
+    df['bos_bullish'] = (
+        close > df['high'].rolling(20, min_periods=5).max().shift(1)
+    ).astype(int)
+    df['bos_bearish'] = (
+        close < df['low'].rolling(20, min_periods=5).min().shift(1)
+    ).astype(int)
+
     # ── ICT / SMC Indicators (Phase 12) ──────────────────────
     df['fvg_bull'], df['fvg_bear'] = find_fvg(df)
     df['ob_bull'], df['ob_bear'] = find_order_blocks(df)
 
-    # MSS Detection (Son 10 bar zirve/dip kırılımı)
+    # MSS Detection (Son 10 bar zirve/dip kirilimi)
     df['mss_up'] = (
         close > df['high'].rolling(10).max().shift(1)
     ).astype(int)
     df['mss_down'] = (
         close < df['low'].rolling(10).min().shift(1)
     ).astype(int)
+
+    return df
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# v2.0 — META-CONTEXT FEATURES
+#
+# Bu feature'lar sinyal üretiminde KULLANILMAZ.
+# Sadece meta-model'e "kontekst" bilgi sağlar.
+# Döngüsel feature sorununu çözer.
+# ═════════════════════════════════════════════════════════════════════════════
+
+def add_meta_context_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Meta-labeling kontekst feature'ları.
+
+    Kategoriler:
+      1. Zaman        : hour_sin/cos, dow_sin/cos
+      2. Rejim        : trend_duration, vol_regime_ratio, regime_age
+      3. Diverjans    : price_vol_div, rsi_price_div, roc_div
+      4. Kalite       : move_cleanliness, trend_consistency, momentum_quality
+      5. Pozisyon     : price_position_50, range_position
+      6. Volume       : vol_relative_50, vol_trend, vol_climax
+      7. Candle       : body_ratio, is_doji, upper/lower_wick_ratio
+      8. Ardışıklık   : consec_direction, consec_magnitude
+      9. Mesafe       : dist_ema200_atr, dist_ema50_atr, dist_vwap_atr
+     10. Mikro yapı   : bar_range_vs_atr, spread_estimate
+     11. İnteraksiyon : vol_x_volatility, trend_x_clean
+    """
+    df = df.copy()
+
+    close = df['close']
+    open_ = df['open']
+    high = df['high']
+    low = df['low']
+    volume = df['volume']
+
+    # ATR referans
+    if 'atr' in df.columns:
+        atr_ref = df['atr']
+    else:
+        atr_ref = atr(high, low, close, 14)
+
+    # ═══════════════════════════════════════════════
+    # 1. ZAMAN PATTERN'LERİ
+    # ═══════════════════════════════════════════════
+    if isinstance(df.index, pd.DatetimeIndex):
+        df['hour_sin'] = np.sin(2 * np.pi * df.index.hour / 24)
+        df['hour_cos'] = np.cos(2 * np.pi * df.index.hour / 24)
+        df['dow_sin'] = np.sin(2 * np.pi * df.index.dayofweek / 7)
+        df['dow_cos'] = np.cos(2 * np.pi * df.index.dayofweek / 7)
+    else:
+        df['hour_sin'] = 0.0
+        df['hour_cos'] = 1.0
+        df['dow_sin'] = 0.0
+        df['dow_cos'] = 1.0
+
+    # ═══════════════════════════════════════════════
+    # 2. REJİM KONTEKST
+    # ═══════════════════════════════════════════════
+
+    # Trend süresi (bar sayısı)
+    if 'ema50' in df.columns:
+        _above = (close > df['ema50']).astype(int)
+    else:
+        _above = (close > ema(close, 50)).astype(int)
+
+    _groups = (_above != _above.shift()).cumsum()
+    df['trend_duration'] = _above.groupby(_groups).cumcount() + 1
+
+    # Volatilite rejim oranı
+    atr_fast = atr_ref.rolling(5, min_periods=2).mean()
+    atr_slow = atr_ref.rolling(50, min_periods=10).mean()
+    df['vol_regime_ratio'] = atr_fast / atr_slow.replace(0, np.nan)
+
+    # Rejim yaşı
+    _vol_expanding = (atr_fast > atr_slow).astype(int)
+    _vol_groups = (_vol_expanding != _vol_expanding.shift()).cumsum()
+    df['regime_age'] = _vol_expanding.groupby(_vol_groups).cumcount() + 1
+
+    # ═══════════════════════════════════════════════
+    # 3. DİVERJANS
+    # ═══════════════════════════════════════════════
+
+    # Fiyat-hacim diverjansı
+    price_chg_5 = close.pct_change(5)
+    vol_chg_5 = volume.pct_change(5)
+    df['price_vol_divergence'] = (
+        np.sign(price_chg_5) - np.sign(vol_chg_5)
+    ).fillna(0)
+
+    # RSI-Fiyat diverjansı
+    if 'rsi' in df.columns:
+        price_up_10 = (close > close.shift(10)).astype(float)
+        rsi_up_10 = (df['rsi'] > df['rsi'].shift(10)).astype(float)
+        df['rsi_price_divergence'] = price_up_10 - rsi_up_10
+    else:
+        df['rsi_price_divergence'] = 0.0
+
+    # ROC diverjansı
+    roc_5 = close.pct_change(5)
+    roc_20 = close.pct_change(20)
+    df['roc_divergence'] = (
+        np.sign(roc_5) - np.sign(roc_20)
+    ).fillna(0)
+
+    # ═══════════════════════════════════════════════
+    # 4. HAREKET KALİTESİ
+    # ═══════════════════════════════════════════════
+
+    # Move cleanliness
+    returns_20 = close.pct_change(20)
+    vol_20 = close.pct_change().rolling(20).std()
+    df['move_cleanliness'] = returns_20.abs() / (vol_20 * np.sqrt(20) + 1e-9)
+
+    # Trend consistency
+    bar_dir = np.sign(close.pct_change())
+    trend_dir = np.sign(returns_20)
+    same_dir = (bar_dir == trend_dir).astype(float)
+    df['trend_consistency'] = same_dir.rolling(20, min_periods=5).mean()
+
+    # Momentum quality
+    mom_5 = close.pct_change(5)
+    mom_5_prev = mom_5.shift(5)
+    df['momentum_quality'] = (
+        np.sign(mom_5) * (mom_5.abs() - mom_5_prev.abs())
+    ).fillna(0)
+
+    # ═══════════════════════════════════════════════
+    # 5. FİYAT POZİSYONU
+    # ═══════════════════════════════════════════════
+
+    # 50-bar range pozisyonu
+    rh_50 = high.rolling(50, min_periods=10).max()
+    rl_50 = low.rolling(50, min_periods=10).min()
+    range_50 = (rh_50 - rl_50).replace(0, np.nan)
+    df['price_position_50'] = (close - rl_50) / range_50
+
+    # 200-bar range pozisyonu
+    rh_200 = high.rolling(200, min_periods=50).max()
+    rl_200 = low.rolling(200, min_periods=50).min()
+    range_200 = (rh_200 - rl_200).replace(0, np.nan)
+    df['range_position'] = (close - rl_200) / range_200
+
+    # ═══════════════════════════════════════════════
+    # 6. VOLUME PROFİLİ
+    # ═══════════════════════════════════════════════
+
+    vol_med_50 = volume.rolling(50, min_periods=10).median()
+    df['vol_relative_50'] = volume / vol_med_50.replace(0, np.nan)
+
+    vol_sma5 = volume.rolling(5, min_periods=2).mean()
+    vol_sma20 = volume.rolling(20, min_periods=5).mean()
+    df['vol_trend'] = vol_sma5 / vol_sma20.replace(0, np.nan)
+
+    vol_max50 = volume.rolling(50, min_periods=10).max()
+    df['vol_climax'] = volume / vol_max50.replace(0, np.nan)
+
+    # ═══════════════════════════════════════════════
+    # 7. CANDLE YAPISI
+    # ═══════════════════════════════════════════════
+
+    body = (close - open_).abs()
+    full_range = (high - low).replace(0, np.nan)
+    df['body_ratio'] = body / full_range
+
+    df['is_doji'] = (df['body_ratio'] < 0.1).astype(int)
+
+    body_top = pd.concat([open_, close], axis=1).max(axis=1)
+    body_bot = pd.concat([open_, close], axis=1).min(axis=1)
+    df['upper_wick_ratio'] = (high - body_top) / atr_ref.replace(0, np.nan)
+    df['lower_wick_ratio'] = (body_bot - low) / atr_ref.replace(0, np.nan)
+
+    # ═══════════════════════════════════════════════
+    # 8. ARDIŞIKLIK
+    # ═══════════════════════════════════════════════
+
+    candle_dir = np.sign(close - open_)
+    cd_groups = (candle_dir != candle_dir.shift()).cumsum()
+    consec_count = candle_dir.groupby(cd_groups).cumcount() + 1
+    df['consec_direction'] = consec_count * candle_dir
+
+    # Ardışık hareketin büyüklüğü
+    _shift_n = consec_count.astype(int).clip(1, 20)
+    df['consec_magnitude'] = 0.0
+    for n in range(1, 21):
+        mask = _shift_n == n
+        if mask.any():
+            df.loc[mask, 'consec_magnitude'] = (
+                (close - close.shift(n)) / atr_ref.replace(0, np.nan)
+            )[mask]
+    df['consec_magnitude'] = df['consec_magnitude'].clip(-10, 10).fillna(0)
+
+    # ═══════════════════════════════════════════════
+    # 9. EMA MESAFELERİ (ATR normalize)
+    # ═══════════════════════════════════════════════
+
+    _ema200 = df['ema200'] if 'ema200' in df.columns else ema(close, 200)
+    _ema50 = df['ema50'] if 'ema50' in df.columns else ema(close, 50)
+
+    df['dist_ema200_atr'] = (close - _ema200) / atr_ref.replace(0, np.nan)
+    df['dist_ema50_atr'] = (close - _ema50) / atr_ref.replace(0, np.nan)
+
+    if 'vwap' in df.columns:
+        df['dist_vwap_atr'] = (close - df['vwap']) / atr_ref.replace(0, np.nan)
+    else:
+        df['dist_vwap_atr'] = 0.0
+
+    # ═══════════════════════════════════════════════
+    # 10. MİKRO YAPI
+    # ═══════════════════════════════════════════════
+
+    df['bar_range_vs_atr'] = (high - low) / atr_ref.replace(0, np.nan)
+    df['spread_estimate'] = (high - low) / close.replace(0, np.nan) * 10000
+
+    # ═══════════════════════════════════════════════
+    # 11. CROSS-FEATURE İNTERAKSİYONLAR
+    # ═══════════════════════════════════════════════
+
+    df['vol_x_volatility'] = (
+        df['vol_relative_50'].fillna(1) *
+        df['vol_regime_ratio'].fillna(1)
+    )
+
+    _max_td = df['trend_duration'].max()
+    _td_norm = df['trend_duration'] / max(_max_td, 1)
+    df['trend_x_clean'] = _td_norm * df['move_cleanliness'].fillna(0)
+
+    # ═══════════════════════════════════════════════
+    # CLEANUP — inf temizliği
+    # ═══════════════════════════════════════════════
+
+    for col in df.columns:
+        if df[col].dtype in [np.float64, np.float32]:
+            df[col] = df[col].replace([np.inf, -np.inf], np.nan)
 
     return df
 

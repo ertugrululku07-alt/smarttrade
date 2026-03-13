@@ -1,4 +1,4 @@
-﻿import os
+import os
 import bcrypt
 from datetime import datetime, timedelta
 from typing import Optional

@@ -1,565 +1,1180 @@
 """
-Meta-Label Trainer v1.0
+Meta-Label Trainer v2.0 (Context-Aware)
 
-Her rejim için ayrı binary XGBoost meta-model eğitir.
+KRİTİK DEĞİŞİKLİK:
+  v1.3: RSI, MACD, BB, Stoch → sinyal üret → AYNI feature'ları meta-model'e ver
+  v2.0: RSI, MACD, BB, Stoch → sinyal üret → CONTEXT feature'ları meta-model'e ver
 
-Meta-model hedefi:
-  "Primary sinyal (rule-based) DOĞRU çıkacak mı?"
-  1 = Evet (TP vurdu)
-  0 = Hayır (SL vurdu)
+  Döngüsel bilgi sorunu çözüldü.
 
-Bu BINARY classification olduğu için:
-  - SHORT bias sorunu YOK
-  - balanced weight MÜKEMMEL çalışır
-  - %55-65 accuracy hedeflenebilir
+v2.0 Improvements:
+  - Context-aware feature architecture (circular dependency çözümü)
+  - v1.3 fixes preserved (no double balancing, degenerate penalty)
+  - 4h HTF data integration in CLI
+  - Quality verdict system (GOOD/OK/WEAK)
+  - Feature category breakdown (CTX/SIG/HTF/TCH)
+  - WR improvement tracking
 """
 
 import os
-import sys
 import gc
 import json
+import time
 import warnings
+import traceback
+
+import joblib
 import numpy as np
 import pandas as pd
-import joblib
-import time as _time
+import xgboost as xgb
+
+from typing import Dict, List, Optional, Tuple
 from datetime import datetime
-from typing import List, Optional, Dict, Tuple
-from xgboost import XGBClassifier
 from sklearn.metrics import (
-    accuracy_score, classification_report, f1_score,
-    precision_score, recall_score, roc_auc_score,
-    brier_score_loss,
-)
-from sklearn.utils.class_weight import compute_sample_weight
-
-warnings.filterwarnings("ignore")
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-
-from backtest.data_fetcher import DataFetcher
-from backtest.signals import add_all_indicators
-from ai.data_sources.futures_data import enrich_ohlcv_with_futures
-from ai.xgboost_trainer import generate_features, FEATURE_COLS, _update_progress
-from ai.regime_detector import Regime
-from ai.meta_labelling.meta_label_generator import (
-    MetaLabelGenerator, generate_meta_labels_bulk,
+    precision_score, recall_score, f1_score,
+    roc_auc_score, accuracy_score, brier_score_loss,
 )
 
-MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
 
-DEFAULT_SYMBOLS = [
-    'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT',
-    'DOGEUSDT', 'SHIBUSDT', 'AVAXUSDT', 'DOTUSDT', 'LINKUSDT', 'MATICUSDT',
-    'UNIUSDT', 'LTCUSDT', 'ATOMUSDT', 'ETCUSDT', 'BCHUSDT', 'ALGOUSDT',
-    'VETUSDT', 'FILUSDT', 'AAVEUSDT', 'GALAUSDT', 'SANDUSDT', 'MANAUSDT',
-    'FTMUSDT', 'NEARUSDT', 'RUNEUSDT', 'EGLDUSDT', 'CRVUSDT', 'CHZUSDT',
-    'AXSUSDT', 'THETAUSDT', 'ENJUSDT', 'SNXUSDT', 'GRTUSDT', 'MKRUSDT',
-    'COMPUSDT', 'YFIUSDT', 'ZILUSDT', 'BATUSDT', 'WAVESUSDT', 'ONTUSDT',
-    'QTUMUSDT', 'OMGUSDT', 'NEOUSDT', 'EOSUSDT', 'XTZUSDT', 'DASHUSDT',
-    'ZECUSDT', 'XMRUSDT', 'XLMUSDT', 'TRXUSDT', 'IOTAUSDT', 'KSMUSDT',
-    'SUSHIUSDT', '1INCHUSDT', 'OCEANUSDT', 'ROSEUSDT', 'CELOUSDT',
-    'KAVAUSDT', 'SRMUSDT', 'RAYUSDT', 'LRCUSDT', 'RENUSDT', 'BALUSDT',
-    'BANDUSDT', 'KNCUSDT', 'RLCUSDT', 'CTKUSDT', 'STXUSDT', 'TRBUSDT',
-    'MDTUSDT', 'INJUSDT', 'TIAUSDT', 'WLDUSDT', 'JTOUSDT', 'ORDIUSDT',
+# ══════════════════════════════════════════════════════════════
+# Optuna (opsiyonel import)
+# ══════════════════════════════════════════════════════════════
+
+try:
+    import optuna
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    OPTUNA_AVAILABLE = True
+except ImportError:
+    OPTUNA_AVAILABLE = False
+
+
+# ══════════════════════════════════════════════════════════════
+# Sabitler
+# ══════════════════════════════════════════════════════════════
+
+VERSION = "2.0"
+
+REGIME_VALUES = [
+    'trending',
+    'mean_reverting',
+    'high_volatile',
+    'low_volatile',
 ]
 
-MAKER_FEE = 0.0004
+# ─────────────────────────────────────────────────────────────
+# FEATURE MİMARİSİ v2.0
+#
+# ESKİ (v1.3):
+#   Signal üretici feature'lar → Meta-model = DÖNGÜSEL
+#
+# YENİ (v2.0):
+#   Sinyal meta → Context → HTF → Minimal teknik = YENİ BİLGİ
+# ─────────────────────────────────────────────────────────────
 
-
-# ═══════════════════════════════════════════════════════════════════
-# TF Konfigürasyonu (meta-label için)
-# ═══════════════════════════════════════════════════════════════════
-
-def _get_meta_tf_config(timeframe: str) -> Dict:
-    configs = {
-        "1m":  {"lookahead": 16, "trail_act": 0.6, "min_data_bars": 200},
-        "3m":  {"lookahead": 32, "trail_act": 0.6, "min_data_bars": 200},
-        "5m":  {"lookahead": 24, "trail_act": 0.6, "min_data_bars": 250},
-        "15m": {"lookahead": 16, "trail_act": 0.6, "min_data_bars": 300},
-        "30m": {"lookahead": 12, "trail_act": 0.6, "min_data_bars": 300},
-        "1h":  {"lookahead": 12, "trail_act": 0.6, "min_data_bars": 300},
-        "4h":  {"lookahead": 12, "trail_act": 0.6, "min_data_bars": 300},
-        "1d":  {"lookahead": 10, "trail_act": 0.6, "min_data_bars": 250},
-    }
-    return configs.get(timeframe, {"lookahead": 16, "trail_act": 0.6, "min_data_bars": 300})
-
-
-# ═══════════════════════════════════════════════════════════════════
-# Meta Feature Seti
-# ═══════════════════════════════════════════════════════════════════
-
-# Orijinal feature'lar + meta-specific feature'lar
-META_EXTRA_FEATURES = [
+# Grup 1: Sinyal meta-data
+SIGNAL_FEATURES = [
     'signal_is_long',
     'signal_confidence',
-    'regime_trending',
-    'regime_mean_rev',
-    'regime_high_vol',
-    'regime_low_vol',
 ]
 
-# Feature'lardan çıkarılacaklar (meta-model için gereksiz)
-META_DROP_FEATURES = [
+# Grup 2: CONTEXT — sinyal üretiminde KULLANILMAYAN feature'lar
+CONTEXT_FEATURES = [
+    # Zaman
+    'hour_sin', 'hour_cos', 'dow_sin', 'dow_cos',
+    # Rejim kontekst
+    'trend_duration', 'vol_regime_ratio', 'regime_age',
+    # Diverjans
+    'price_vol_divergence', 'rsi_price_divergence', 'roc_divergence',
+    # Hareket kalitesi
+    'move_cleanliness', 'trend_consistency', 'momentum_quality',
+    # Fiyat pozisyonu
+    'price_position_50', 'range_position',
+    # Volume profili
+    'vol_relative_50', 'vol_trend', 'vol_climax',
+    # Candle yapısı
+    'body_ratio', 'is_doji', 'upper_wick_ratio', 'lower_wick_ratio',
+    # Ardışıklık
+    'consec_direction', 'consec_magnitude',
+    # EMA mesafeleri (ATR normalize)
+    'dist_ema200_atr', 'dist_ema50_atr', 'dist_vwap_atr',
+    # Mikro yapı
+    'bar_range_vs_atr', 'spread_estimate',
+    # İnteraksiyon
+    'vol_x_volatility', 'trend_x_clean',
+]
+
+# Grup 3: HTF (multi-timeframe)
+HTF_FEATURES = [
+    'htf_bias_numeric', 'htf_trend_strength', 'htf_rsi',
+    'htf_price_vs_ema200', 'htf_ema_alignment', 'htf_structure_numeric',
+]
+
+# Grup 4: Minimal teknik (sinyal üretiminde doğrudan kullanılmayan)
+MINIMAL_TECHNICAL = [
+    'adx',          # Trend gücü ölçer, sinyal üretmez
+    'atr_pct',      # Volatilite seviyesi
+    'hurst',        # Fraktal yapı
+    'vol_ratio_20', # Volume relatif
+]
+
+# Feature'lardan düşürülecekler
+DROP_FEATURES = [
     'funding_rate', 'funding_rate_ma8', 'funding_rate_trend',
     'open_interest_norm', 'long_short_ratio',
 ]
 
+# v1.3'teki DÖNGÜSEL feature'lar — KASITLI olarak HARİÇ
+# Bunlar sinyal üretiminde kullanılıyor, meta-model'e VERİLMEYECEK
+EXCLUDED_CIRCULAR = [
+    'rsi', 'macd_hist', 'bb_width', 'bb_pos', 'stoch_k',
+    'ema_cross', 'di_plus', 'di_minus', 'di_diff',
+    'efficiency_ratio', 'zscore_20', 'adx_accel',
+    'volatility_10', 'momentum_10', 'atr_rank_50',
+    'macd', 'macd_signal',
+]
 
-def _get_meta_features(base_features: List[str]) -> List[str]:
-    """Meta-model için feature listesi oluştur"""
-    features = [f for f in base_features if f not in META_DROP_FEATURES]
-    features.extend(META_EXTRA_FEATURES)
-    return features
+# Purge & Split parametreleri
+DEFAULT_PURGE_BARS = 16
+TRAIN_PCT = 0.65
+VAL_PCT = 0.15
 
-
-# ═══════════════════════════════════════════════════════════════════
-# Purged Split (meta-label için)
-# ═══════════════════════════════════════════════════════════════════
-
-def _purged_split_meta(
-    X: pd.DataFrame,
-    y: pd.Series,
-    purge_bars: int,
-    train_pct: float = 0.65,
-    val_pct: float = 0.15,
-) -> Tuple:
-    """Train / Val / Test split with purge gaps"""
-    n = len(X)
-    gaps = 2 * purge_bars
-    usable = n - gaps
-
-    n_train = int(usable * train_pct)
-    n_val = int(usable * val_pct)
-
-    train_end = n_train
-    val_start = train_end + purge_bars
-    val_end = val_start + n_val
-    test_start = val_end + purge_bars
-
-    return (
-        X.iloc[:train_end], y.iloc[:train_end],
-        X.iloc[val_start:val_end], y.iloc[val_start:val_end],
-        X.iloc[test_start:], y.iloc[test_start:],
-    )
+# Feature kalite eşiği
+MAX_NAN_RATIO = 0.50       # %50'den fazla NaN → feature düşür
+MIN_SAMPLES_PER_REGIME = 100
+MIN_SAMPLES_AFTER_SPLIT = 30
 
 
-# ═══════════════════════════════════════════════════════════════════
-# Optuna — Binary Meta-Model
-# ═══════════════════════════════════════════════════════════════════
-
-def _optuna_optimize_binary(
-    X_train, y_train, X_val, y_val,
-    n_trials: int = 25,
-) -> Dict:
-    """Binary classification için Optuna optimizasyonu"""
-    try:
-        import optuna
-        optuna.logging.set_verbosity(optuna.logging.WARNING)
-    except ImportError:
-        print("   ⚠️ Optuna yüklü değil, default params kullanılıyor")
-        return {}
-
-    sw = compute_sample_weight('balanced', y_train)
-
-    def objective(trial):
-        params = {
-            'n_estimators': trial.suggest_int('n_estimators', 200, 800),
-            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.1, log=True),
-            'max_depth': trial.suggest_int('max_depth', 3, 8),
-            'subsample': trial.suggest_float('subsample', 0.6, 1.0),
-            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
-            'min_child_weight': trial.suggest_int('min_child_weight', 1, 15),
-            'gamma': trial.suggest_float('gamma', 0.0, 1.5),
-            'reg_alpha': trial.suggest_float('reg_alpha', 1e-5, 5.0, log=True),
-            'reg_lambda': trial.suggest_float('reg_lambda', 1e-5, 5.0, log=True),
-        }
-
-        m = XGBClassifier(
-            **params, objective='binary:logistic',
-            random_state=42, tree_method='hist',
-            early_stopping_rounds=25, eval_metric='logloss', n_jobs=-1,
-        )
-        m.fit(X_train, y_train, sample_weight=sw,
-              eval_set=[(X_val, y_val)], verbose=False)
-
-        preds = m.predict(X_val)
-        proba = m.predict_proba(X_val)[:, 1]
-
-        f1 = f1_score(y_val, preds, zero_division=0)
-        precision = precision_score(y_val, preds, zero_division=0)
-
-        try:
-            auc = roc_auc_score(y_val, proba)
-        except Exception:
-            auc = 0.5
-
-        # Precision (Win Rate) ağırlıklı skor
-        # Yanlış sinyal (False Positive) bizim en büyük düşmanımız.
-        # Bu yüzden Precision ağırlığını artırıyoruz.
-        score = precision * 0.50 + auc * 0.30 + f1 * 0.20
-
-        return score
-
-    study = optuna.create_study(direction='maximize')
-    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
-
-    print(f"   ✅ Optuna best score: {study.best_value:.4f}")
-    return study.best_params
-
-
-# ═══════════════════════════════════════════════════════════════════
-# Ana Meta-Trainer
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
+# Ana Trainer Sınıfı
+# ══════════════════════════════════════════════════════════════
 
 class MetaTrainer:
     """
-    Her rejim için ayrı binary meta-model eğitir.
+    Her regime için ayrı XGBoost meta-model eğitir.
 
-    Kullanım:
-        trainer = MetaTrainer(timeframe='15m')
-        results = trainer.train_all(symbols=DEFAULT_SYMBOLS, limit=3000)
+    Eğitim Pipeline:
+      1. Feature listesi oluştur (mevcut kolonlardan)
+      2. Feature kalite kontrolü (NaN oranı)
+      3. Purged train/val/test split
+      4. Optuna hyperparameter optimization (val set ile)
+      5. Final model eğitimi (train, val ile early stop)
+      6. Test set üzerinde değerlendirme
+      7. Threshold sweep
+      8. Model + metadata kaydet
     """
 
-    def __init__(self, timeframe: str = "1h"):
-        self.timeframe = timeframe
-        self.tf_config = _get_meta_tf_config(timeframe)
-
-    def train_all(
+    def __init__(
         self,
-        symbols: Optional[List[str]] = None,
-        limit: int = 3000,
+        model_dir: str = "models/meta",
+        use_mtf: bool = True,
+        optimize: bool = True,
         n_trials: int = 25,
-        use_cache: bool = False,
+        purge_bars: int = DEFAULT_PURGE_BARS,
+    ):
+        self.model_dir = model_dir
+        self.use_mtf = use_mtf
+        self.optimize = optimize and OPTUNA_AVAILABLE
+        self.n_trials = n_trials
+        self.purge_bars = purge_bars
+
+        os.makedirs(model_dir, exist_ok=True)
+
+    # ══════════════════════════════════════════════════
+    # ANA EĞİTİM
+    # ══════════════════════════════════════════════════
+
+    def train_all_regimes(
+        self,
+        meta_df: pd.DataFrame,
+        version: str = VERSION,
+        timeframe: str = "1h",
     ) -> Dict:
-        """
-        Tüm süreç:
-          1. Veri çek
-          2. Feature'ları hesapla
-          3. Meta-label üret
-          4. Her rejim için model eğit
-          5. Kaydet
-        """
-        if symbols is None:
-            symbols = DEFAULT_SYMBOLS
-
-        lookahead = self.tf_config['lookahead']
-        trail_act = self.tf_config['trail_act']
-        min_bars = self.tf_config['min_data_bars']
-
-        print(f"\n{'═' * 65}")
-        print(f"  🧠 META-LABEL TRAINER v1.0")
-        print(f"  TF: {self.timeframe} | Lookahead: {lookahead} | "
-              f"Coins: {len(symbols)}")
-        print(f"{'═' * 65}\n")
-
-        # ── 1. Veri Çekme ────────────────────────────────────
-        print("📥 Veri çekiliyor...")
-        fetcher = DataFetcher('binance')
-        all_dfs = {}
-        skipped = []
-
-        for idx, sym in enumerate(symbols):
-            try:
-                if use_cache:
-                    try:
-                        from ai.data_cache import get_cached_ohlcv
-                        df = get_cached_ohlcv(sym, self.timeframe, limit=limit, fetcher=fetcher)
-                    except ImportError:
-                        df = fetcher.fetch_ohlcv(sym, self.timeframe, limit=limit)
-                else:
-                    df = fetcher.fetch_ohlcv(sym, self.timeframe, limit=limit)
-
-                if df is None or df.empty or len(df) < min_bars:
-                    skipped.append(sym)
-                    continue
-
-                df = add_all_indicators(df)
-                df = enrich_ohlcv_with_futures(df, sym, silent=True)
-                df = generate_features(df)
-
-                all_dfs[sym] = df
-
-                if not use_cache:
-                    _time.sleep(0.25)
-
-                if (idx + 1) % 10 == 0:
-                    print(f"   [{idx + 1}/{len(symbols)}] {len(all_dfs)} coin yüklendi")
-
-            except Exception as e:
-                print(f"   ⚠️ {sym}: {e}")
-                skipped.append(sym)
-
-        print(f"   ✅ {len(all_dfs)} coin yüklendi, {len(skipped)} atlandı\n")
-
-        if not all_dfs:
-            return {"error": "No data"}
-
-        # ── 2. Meta-Label Üretimi ────────────────────────────
-        print("🏷️  Meta-label üretiliyor...")
-        meta_df, meta_stats = generate_meta_labels_bulk(
-            all_dfs,
-            lookahead=lookahead,
-            trail_activation=trail_act,
-            verbose=True,
-        )
+        """Tüm regime'ler için model eğit."""
 
         if meta_df.empty:
-            return {"error": "No meta-labels generated"}
+            print("  [ERROR] Meta-DataFrame boş. Eğitim yapılamaz.")
+            return {}
 
-        del all_dfs
-        gc.collect()
+        start_time = time.time()
 
-        # ── 3. Her Rejim İçin Model Eğit ─────────────────────
-        print("\n🎓 Rejim bazlı meta-model eğitimi...")
+        print(f"\n  {'='*60}")
+        print(f"  META-TRAINER v{VERSION}")
+        print(f"  Samples: {len(meta_df):,} | TF: {timeframe}")
+        print(f"  MTF: {'ON' if self.use_mtf else 'OFF'} | "
+              f"Optuna: {'ON' if self.optimize else 'OFF'}")
+        print(f"  {'='*60}")
 
-        base_features = FEATURE_COLS.copy()
-        meta_features = _get_meta_features(base_features)
+        # Regime kolonu tespit et  [FIX #5]
+        regime_col = self._find_regime_column(meta_df)
+        if regime_col is None:
+            print("  [ERROR] Regime kolonu bulunamadı!")
+            return {}
 
-        # Kullanılabilir feature'ları filtrele
-        available_features = [f for f in meta_features if f in meta_df.columns]
-        print(f"   📡 Kullanılabilir feature: {len(available_features)}")
+        print(f"  Regime column: '{regime_col}'")
+
+        # Hangi regime'ler mevcut?
+        available_regimes = self._get_available_regimes(
+            meta_df, regime_col
+        )
 
         results = {}
-        regime_models = {}
 
-        for regime in Regime:
-            regime_val = regime.value
-            regime_mask = meta_df['_regime'] == regime_val
-            regime_df = meta_df[regime_mask].copy()
+        for regime_val in available_regimes:
+            regime_df = meta_df[
+                meta_df[regime_col] == regime_val
+            ].copy()
 
-            if len(regime_df) < 100:
-                print(f"\n   ⏭️  {regime_val}: Yetersiz veri ({len(regime_df)} sample), atlandı")
-                results[regime_val] = {"status": "skipped", "samples": len(regime_df)}
+            if len(regime_df) < MIN_SAMPLES_PER_REGIME:
+                print(
+                    f"\n  [SKIP] {regime_val}: Yetersiz veri "
+                    f"({len(regime_df)} < {MIN_SAMPLES_PER_REGIME})"
+                )
+                results[regime_val] = {
+                    "status": "skipped",
+                    "samples": len(regime_df),
+                }
                 continue
 
-            print(f"\n{'─' * 55}")
-            print(f"   🎯 {regime_val.upper()} rejimi eğitiliyor...")
-            print(f"   Samples: {len(regime_df):,}")
+            result = self._train_single_regime(
+                regime_df=regime_df,
+                regime_val=regime_val,
+                timeframe=timeframe,
+                version=version,
+            )
 
-            # NaN temizle
-            regime_df = regime_df.dropna(subset=available_features + ['meta_label'])
-            regime_df = regime_df.replace([np.inf, -np.inf], np.nan)
-            regime_df = regime_df.dropna(subset=available_features)
+            results[regime_val] = result
 
-            if len(regime_df) < 80:
-                print(f"   ⏭️  NaN temizleme sonrası yetersiz ({len(regime_df)})")
-                results[regime_val] = {"status": "skipped_after_clean", "samples": len(regime_df)}
-                continue
+            gc.collect()
 
-            X = regime_df[available_features].astype(np.float32)
-            y = regime_df['meta_label'].astype(int)
+        # Özet
+        elapsed = time.time() - start_time
+        self._print_summary(results, elapsed)
+
+        return results
+
+    # ══════════════════════════════════════════════════
+    # TEK REGİME EĞİTİMİ
+    # ══════════════════════════════════════════════════
+
+    def _train_single_regime(
+        self,
+        regime_df: pd.DataFrame,
+        regime_val: str,
+        timeframe: str,
+        version: str,
+    ) -> Dict:
+        """Tek bir regime için tam eğitim pipeline'ı."""
+
+        print(f"\n  {'-'*50}")
+        print(f"  [TRAIN] {regime_val.upper()}")
+        print(f"  Samples: {len(regime_df):,}")
+
+        try:
+            # ── 1. Feature Listesi (v2.0 — context-based) ──
+            features = self._build_feature_list(regime_df)
+
+            if len(features) < 5:
+                print(f"  [SKIP] Çok az feature: {len(features)}")
+                return {"status": "insufficient_features"}
+
+            # ── 2. Feature Kalite Kontrolü ──
+            features = self._filter_quality_features(
+                regime_df, features
+            )
+
+            # Feature category breakdown
+            n_sig = sum(1 for f in features if f in SIGNAL_FEATURES)
+            n_ctx = sum(1 for f in features if f in CONTEXT_FEATURES)
+            n_htf = sum(1 for f in features if f.startswith('htf_'))
+            n_tech = sum(1 for f in features if f in MINIMAL_TECHNICAL)
+
+            print(f"  Features: {len(features)} "
+                  f"(sig={n_sig} ctx={n_ctx} htf={n_htf} tech={n_tech})")
+
+            # Döngüsel feature uyarısı
+            circular_found = [f for f in features if f in EXCLUDED_CIRCULAR]
+            if circular_found:
+                print(f"  [WARN] Döngüsel feature bulundu (çıkarılıyor): {circular_found}")
+                features = [f for f in features if f not in EXCLUDED_CIRCULAR]
+                print(f"  Features (temiz): {len(features)}")
+
+            # ── 3. X, y Hazırlama ──
+            X, y = self._prepare_xy(regime_df, features)
+
+            if X is None or y is None:
+                return {"status": "data_preparation_error"}
 
             # Label dağılımı
-            n_correct = int((y == 1).sum())
-            n_wrong = int((y == 0).sum())
-            raw_wr = n_correct / len(y) * 100
-            print(f"   Label: Correct={n_correct} Wrong={n_wrong} | Raw WR=%{raw_wr:.1f}")
+            n_pos = int((y == 1).sum())
+            n_neg = int((y == 0).sum())
+            raw_wr = n_pos / len(y) * 100 if len(y) > 0 else 0
 
-            # Purged split
-            try:
-                X_train, y_train, X_val, y_val, X_test, y_test = \
-                    _purged_split_meta(X, y, purge_bars=lookahead)
-            except Exception as e:
-                print(f"   ⚠️ Split hatası: {e}")
-                results[regime_val] = {"status": "split_error", "error": str(e)}
-                continue
-
-            print(f"   Split: Train={len(X_train)} Val={len(X_val)} Test={len(X_test)}")
-
-            if len(X_train) < 50 or len(X_val) < 20 or len(X_test) < 20:
-                print(f"   ⏭️  Split sonrası yetersiz veri")
-                results[regime_val] = {"status": "insufficient_split"}
-                continue
-
-            # ── Optuna ───────────────────────────────────────
-            print(f"   🔍 Optuna {n_trials} trial...")
-            best_params = _optuna_optimize_binary(
-                X_train, y_train, X_val, y_val, n_trials=n_trials,
+            print(
+                f"  Labels: Correct={n_pos} Wrong={n_neg} | "
+                f"Raw WR={raw_wr:.1f}%"
             )
 
-            # ── Final Model ──────────────────────────────────
-            final_params = {
-                'n_estimators': best_params.get('n_estimators', 500),
-                'learning_rate': best_params.get('learning_rate', 0.03),
-                'max_depth': best_params.get('max_depth', 6),
-                'subsample': best_params.get('subsample', 0.8),
-                'colsample_bytree': best_params.get('colsample_bytree', 0.7),
-                'min_child_weight': best_params.get('min_child_weight', 5),
-                'gamma': best_params.get('gamma', 0.3),
-                'reg_alpha': best_params.get('reg_alpha', 0.1),
-                'reg_lambda': best_params.get('reg_lambda', 1.0),
+            if n_pos < 10 or n_neg < 10:
+                print("  [SKIP] Çok dengesiz veri")
+                return {"status": "imbalanced_data"}
+
+            # ── 4. Purged Split ──  [FIX #1, #3]
+            splits = self._purged_split(X, y)
+
+            if splits is None:
+                return {"status": "split_error"}
+
+            X_train, y_train, X_val, y_val, X_test, y_test = splits
+
+            print(
+                f"  Split: Train={len(X_train)} "
+                f"Val={len(X_val)} Test={len(X_test)}"
+            )
+
+            # ── 5. Optuna ──  [FIX #4]
+            scale_pw = max(1.0, n_neg / max(1.0, n_pos))
+
+            if self.optimize:
+                print(
+                    f"  [OPT] Optuna {self.n_trials} trials..."
+                )
+                best_params = self._run_optuna(
+                    X_train, y_train, X_val, y_val,
+                    scale_pw,
+                )
+            else:
+                best_params = self._default_params(scale_pw)
+
+            # ── 6. Final Model ──  [FIX #1, #6, #7]
+            model = self._train_final_model(
+                X_train, y_train, X_val, y_val,
+                best_params,
+            )
+
+            # ── 7. Test Değerlendirme ──  [FIX #8, #9]
+            metrics = self._evaluate_model(
+                model, X_test, y_test, raw_wr
+            )
+
+            # ── 8. Feature Importance ──
+            importance = self._get_feature_importance(
+                model, features
+            )
+            self._print_feature_importance(importance)
+
+            # ── 9. Kaydet ──
+            save_path = self._save_model(
+                model=model,
+                features=features,
+                regime_val=regime_val,
+                timeframe=timeframe,
+                version=version,
+                metrics=metrics,
+                params=best_params,
+                importance=importance,
+                raw_wr=raw_wr,
+                split_sizes={
+                    'train': len(X_train),
+                    'val': len(X_val),
+                    'test': len(X_test),
+                },
+            )
+
+            return {
+                "status": "trained",
+                "samples": len(regime_df),
+                "features": len(features),
+                "raw_wr": round(raw_wr, 1),
+                "model_path": save_path,
+                **metrics,
             }
 
-            sw = compute_sample_weight('balanced', y_train)
+        except Exception as e:
+            print(f"  [ERROR] {regime_val}: {e}")
+            traceback.print_exc()
+            return {"status": "error", "error": str(e)}
 
-            model = XGBClassifier(
-                **final_params, objective='binary:logistic',
-                random_state=42, tree_method='hist',
-                early_stopping_rounds=30, eval_metric='logloss', n_jobs=-1,
+    # ══════════════════════════════════════════════════
+    # FEATURE MANAGEMENT  [FIX #2, #10, #11]
+    # ══════════════════════════════════════════════════
+
+    def _build_feature_list(
+        self,
+        df: pd.DataFrame,
+    ) -> List[str]:
+        """
+        v2.0 Feature seçimi:
+          1. Signal meta     (2 feature)
+          2. Context         (~33 feature) ← ANA GRUP
+          3. HTF             (6 feature)
+          4. Minimal tech    (4 feature)
+
+        RSI, MACD, BB, Stoch vb. DAHIL EDİLMEZ (döngüsel).
+        """
+        available = set(df.columns)
+        features = []
+        seen = set()
+
+        # 1. Signal meta
+        for f in SIGNAL_FEATURES:
+            if f in available and f not in seen:
+                features.append(f)
+                seen.add(f)
+
+        # 2. CONTEXT (ana grup)
+        for f in CONTEXT_FEATURES:
+            if f in available and f not in seen:
+                features.append(f)
+                seen.add(f)
+
+        # 3. HTF
+        if self.use_mtf:
+            for f in HTF_FEATURES:
+                if f in available and f not in seen:
+                    features.append(f)
+                    seen.add(f)
+
+        # 4. Minimal technical
+        for f in MINIMAL_TECHNICAL:
+            if (f in available
+                    and f not in seen
+                    and f not in DROP_FEATURES):
+                features.append(f)
+                seen.add(f)
+
+        return features
+
+    def _filter_quality_features(
+        self,
+        df: pd.DataFrame,
+        features: List[str],
+    ) -> List[str]:
+        """
+        NaN oranı çok yüksek feature'ları filtrele.
+
+        [FIX #10]: >%50 NaN olan feature'lar düşürülür.
+        """
+        quality_features = []
+        dropped = []
+
+        for f in features:
+            if f not in df.columns:
+                continue
+
+            nan_ratio = df[f].isna().mean()
+
+            if nan_ratio > MAX_NAN_RATIO:
+                dropped.append(f"{f}({nan_ratio:.0%})")
+            else:
+                quality_features.append(f)
+
+        if dropped:
+            print(
+                f"  [WARN] NaN nedeniyle düşürülen: "
+                f"{', '.join(dropped)}"
+            )
+
+        return quality_features
+
+    def _prepare_xy(
+        self,
+        df: pd.DataFrame,
+        features: List[str],
+    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        """X matrix ve y vector hazırla."""
+        try:
+            # meta_label kolonu
+            if 'meta_label' not in df.columns:
+                print("  [ERROR] 'meta_label' kolonu yok")
+                return None, None
+
+            # NaN/inf temizle
+            clean = df[features + ['meta_label']].copy()
+            clean = clean.replace([np.inf, -np.inf], np.nan)
+            clean = clean.dropna(subset=['meta_label'])
+
+            if len(clean) < MIN_SAMPLES_PER_REGIME:
+                print(
+                    f"  [ERROR] Temizlik sonrası yetersiz: "
+                    f"{len(clean)}"
+                )
+                return None, None
+
+            # Fill remaining NaN with column median
+            for f in features:
+                if clean[f].isna().any():
+                    median_val = clean[f].median()
+                    if np.isnan(median_val):
+                        median_val = 0.0
+                    clean[f] = clean[f].fillna(median_val)
+
+            X = clean[features].astype(np.float32).values
+            y = clean['meta_label'].values.astype(np.int32).ravel()
+
+            # y validation
+            unique = set(np.unique(y[~np.isnan(y)]))
+            if not unique.issubset({0, 1}):
+                warnings.warn(f"meta_label beklenmeyen değerler: {unique}")
+                y = (y > 0).astype(np.int32)
+
+            return X, y
+
+        except Exception as e:
+            print(f"  [ERROR] X/y hazırlama: {e}")
+            return None, None
+
+    # ══════════════════════════════════════════════════
+    # PURGED SPLIT  [FIX #1, #3]
+    # ══════════════════════════════════════════════════
+
+    def _purged_split(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+    ) -> Optional[Tuple]:
+        """
+        Train / Val / Test split with purge gaps.
+
+        [FIX #1]: Ayrı train/val/test — data leakage yok.
+        [FIX #3]: Purge gap ile look-ahead bias koruması.
+
+        Layout:
+          [--- Train ---|purge|--- Val ---|purge|--- Test ---]
+        """
+        n = len(X)
+        purge = self.purge_bars
+        total_purge = 2 * purge
+        usable = n - total_purge
+
+        if usable < MIN_SAMPLES_AFTER_SPLIT * 3:
+            print(
+                f"  [ERROR] Purge sonrası yetersiz: "
+                f"{usable} < {MIN_SAMPLES_AFTER_SPLIT * 3}"
+            )
+            return None
+
+        n_train = int(usable * TRAIN_PCT)
+        n_val = int(usable * VAL_PCT)
+
+        train_end = n_train
+        val_start = train_end + purge
+        val_end = val_start + n_val
+        test_start = val_end + purge
+
+        # Minimum kontrol
+        n_test = n - test_start
+        if (n_train < MIN_SAMPLES_AFTER_SPLIT
+                or n_val < MIN_SAMPLES_AFTER_SPLIT // 2
+                or n_test < MIN_SAMPLES_AFTER_SPLIT // 2):
+            print("  [ERROR] Split sonrası parçalar çok küçük")
+            return None
+
+        return (
+            X[:train_end], y[:train_end],
+            X[val_start:val_end], y[val_start:val_end],
+            X[test_start:], y[test_start:],
+        )
+
+    # ══════════════════════════════════════════════════
+    # OPTUNA  [FIX #4, #12]
+    # ══════════════════════════════════════════════════
+
+    def _run_optuna(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        X_val: np.ndarray,
+        y_val: np.ndarray,
+        scale_pos_weight: float,
+    ) -> Dict:
+        """
+        Optuna hyperparameter optimization.
+
+        [FIX #4]: Val set ile değerlendirme (CV yerine).
+        Purge gap zaten split'te uygulandı.
+
+        Skor: (Prec×0.30 + AUC×0.50 + F1×0.20) × balance - penalty
+        """
+        if not OPTUNA_AVAILABLE:
+            return self._default_params(scale_pos_weight)
+
+        def objective(trial):
+            params = {
+                'n_estimators': trial.suggest_int(
+                    'n_estimators', 100, 500
+                ),
+                'max_depth': trial.suggest_int('max_depth', 3, 7),
+                'learning_rate': trial.suggest_float(
+                    'learning_rate', 0.01, 0.1, log=True
+                ),
+                'subsample': trial.suggest_float(
+                    'subsample', 0.6, 0.95
+                ),
+                'colsample_bytree': trial.suggest_float(
+                    'colsample_bytree', 0.5, 0.95
+                ),
+                'min_child_weight': trial.suggest_int(
+                    'min_child_weight', 1, 15
+                ),
+                'gamma': trial.suggest_float('gamma', 0.0, 1.5),
+                'reg_alpha': trial.suggest_float(
+                    'reg_alpha', 1e-5, 5.0, log=True
+                ),
+                'reg_lambda': trial.suggest_float(
+                    'reg_lambda', 1e-5, 5.0, log=True
+                ),
+                'scale_pos_weight': scale_pos_weight,
+                'eval_metric': 'logloss',
+                'random_state': 42,
+                'tree_method': 'hist',
+                'n_jobs': -1,
+            }
+
+            model = xgb.XGBClassifier(
+                **params,
+                early_stopping_rounds=20,
             )
             model.fit(
-                X_train, y_train, sample_weight=sw,
-                eval_set=[(X_val, y_val)], verbose=False,
+                X_train, y_train,
+                eval_set=[(X_val, y_val)],
+                verbose=False,
             )
 
-            # ── Evaluation ───────────────────────────────────
-            y_pred = model.predict(X_test)
-            y_proba = model.predict_proba(X_test)[:, 1]
+            preds = model.predict(X_val)
+            proba = model.predict_proba(X_val)[:, 1]
 
-            acc = accuracy_score(y_test, y_pred)
-            f1 = f1_score(y_test, y_pred, zero_division=0)
-            prec = precision_score(y_test, y_pred, zero_division=0)
-            rec = recall_score(y_test, y_pred, zero_division=0)
+            prec = precision_score(y_val, preds, zero_division=0)
+            rec = recall_score(y_val, preds, zero_division=0)
+            f1 = f1_score(y_val, preds, zero_division=0)
 
             try:
-                auc = roc_auc_score(y_test, y_proba)
+                auc = roc_auc_score(y_val, proba)
             except Exception:
                 auc = 0.5
 
-            brier = brier_score_loss(y_test, y_proba)
-
-            # Win rate simülasyonu
-            # Meta-model "trade et" dediğinde gerçekten kazanıyor mu?
-            trade_mask = y_pred == 1
-            if trade_mask.sum() > 0:
-                filtered_wr = y_test[trade_mask].mean() * 100
-                n_trades = trade_mask.sum()
-                n_filtered_out = (~trade_mask).sum()
+            # Degenerate solution penalty: if recall>95% model is
+            # likely predicting everything as positive (no filtering)
+            if rec > 0.95:
+                penalty = 0.15
+            elif rec > 0.90:
+                penalty = 0.05
             else:
-                filtered_wr = 0.0
-                n_trades = 0
-                n_filtered_out = len(y_test)
+                penalty = 0.0
 
-            # Confidence threshold sweep
-            best_threshold = 0.50
-            best_threshold_wr = filtered_wr
-            for thr in np.arange(0.45, 0.75, 0.02):
-                thr_mask = y_proba >= thr
-                if thr_mask.sum() > 10:
-                    thr_wr = y_test[thr_mask].mean() * 100
-                    if thr_wr > best_threshold_wr:
-                        best_threshold_wr = thr_wr
-                        best_threshold = thr
+            # Balance penalty: precision and recall should be
+            # reasonably close for a useful filter
+            balance = 1.0 - abs(prec - rec) * 0.1
 
-            print(f"\n   📊 {regime_val.upper()} Sonuçları:")
-            print(f"   Accuracy   : %{acc * 100:.1f}")
-            print(f"   F1 Score   : %{f1 * 100:.1f}")
-            print(f"   Precision  : %{prec * 100:.1f}")
-            print(f"   Recall     : %{rec * 100:.1f}")
-            print(f"   AUC        : {auc:.4f}")
-            print(f"   Brier      : {brier:.4f}")
-            print(f"   Raw WR     : %{raw_wr:.1f}")
-            print(f"   Filtered WR: %{filtered_wr:.1f} ({n_trades} trades, "
-                  f"{n_filtered_out} filtered)")
-            print(f"   Best Thr   : {best_threshold:.2f} → WR=%{best_threshold_wr:.1f}")
+            score = (prec * 0.30 + auc * 0.50 + f1 * 0.20) * balance - penalty
+            return score
 
-            # ── Kaydet ───────────────────────────────────────
-            os.makedirs(MODEL_DIR, exist_ok=True)
-            save_path = os.path.join(
-                MODEL_DIR, f"meta_{regime_val}_{self.timeframe}.joblib"
-            )
+        study = optuna.create_study(direction='maximize')
+        study.optimize(
+            objective,
+            n_trials=self.n_trials,
+            show_progress_bar=False,
+        )
 
-            meta_info = {
-                "regime": regime_val,
-                "timeframe": self.timeframe,
-                "trained_at": datetime.now().isoformat(),
-                "lookahead": lookahead,
-                "accuracy": round(acc * 100, 2),
-                "f1": round(f1 * 100, 2),
-                "precision": round(prec * 100, 2),
-                "recall": round(rec * 100, 2),
-                "auc": round(auc, 4),
-                "brier": round(brier, 4),
-                "raw_wr": round(raw_wr, 1),
-                "filtered_wr": round(filtered_wr, 1),
-                "best_threshold": round(best_threshold, 2),
-                "best_threshold_wr": round(best_threshold_wr, 1),
-                "n_train": len(X_train),
-                "n_val": len(X_val),
-                "n_test": len(X_test),
-                "n_trades_test": int(n_trades),
-                "best_params": final_params,
-                "version": "1.0",
-            }
+        print(f"  [OPT] Best: {study.best_value:.4f}")
 
-            joblib.dump((model, available_features, meta_info), save_path)
-            print(f"   💾 Saved: {save_path}")
+        best = study.best_params
+        best.update({
+            'scale_pos_weight': scale_pos_weight,
+            'eval_metric': 'logloss',
+            'random_state': 42,
+            'tree_method': 'hist',
+            'n_jobs': -1,
+        })
 
-            results[regime_val] = {
-                "status": "trained",
-                "accuracy": round(acc * 100, 2),
-                "f1": round(f1 * 100, 2),
-                "precision": round(prec * 100, 2),
-                "auc": round(auc, 4),
-                "raw_wr": round(raw_wr, 1),
-                "filtered_wr": round(filtered_wr, 1),
-                "best_threshold": round(best_threshold, 2),
-                "best_threshold_wr": round(best_threshold_wr, 1),
-                "samples": len(regime_df),
-                "model_path": save_path,
-            }
+        return best
 
-            regime_models[regime_val] = model
-
-            del X, y, X_train, y_train, X_val, y_val, X_test, y_test
-            gc.collect()
-
-        # ── Final Rapor ──────────────────────────────────────
-        print(f"\n{'═' * 65}")
-        print(f"  🏆 META-LABEL EĞİTİM ÖZETİ ({self.timeframe})")
-        print(f"{'═' * 65}")
-
-        for regime_val, res in results.items():
-            if res.get('status') == 'trained':
-                print(f"  ✅ {regime_val:16}: "
-                      f"Acc=%{res['accuracy']:5.1f} "
-                      f"F1=%{res['f1']:5.1f} "
-                      f"Prec=%{res['precision']:5.1f} "
-                      f"RawWR=%{res['raw_wr']:.0f} "
-                      f"FilteredWR=%{res['filtered_wr']:.0f} "
-                      f"BestThr={res['best_threshold']:.2f}→%{res['best_threshold_wr']:.0f}")
-            else:
-                print(f"  ⏭️  {regime_val:16}: {res.get('status', 'unknown')}")
-
-        print(f"{'═' * 65}\n")
-
+    def _default_params(self, scale_pos_weight: float) -> Dict:
+        """Optuna olmadığında default parametreler."""
         return {
-            "regime_results": results,
-            "meta_stats": meta_stats,
-            "timeframe": self.timeframe,
-            "total_coins": len(symbols) - len(skipped),
-            "skipped_coins": skipped,
+            'n_estimators': 300,
+            'max_depth': 5,
+            'learning_rate': 0.03,
+            'subsample': 0.8,
+            'colsample_bytree': 0.7,
+            'min_child_weight': 5,
+            'gamma': 0.3,
+            'reg_alpha': 0.1,
+            'reg_lambda': 1.0,
+            'scale_pos_weight': scale_pos_weight,
+            'eval_metric': 'logloss',
+            'random_state': 42,
+            'tree_method': 'hist',
+            'n_jobs': -1,
         }
 
+    # ══════════════════════════════════════════════════
+    # FINAL MODEL  [FIX #1, #6, #7]
+    # ══════════════════════════════════════════════════
 
-# ═══════════════════════════════════════════════════════════════════
-# CLI
-# ═══════════════════════════════════════════════════════════════════
+    def _train_final_model(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        X_val: np.ndarray,
+        y_val: np.ndarray,
+        params: Dict,
+    ) -> xgb.XGBClassifier:
+        """
+        Final model eğitimi.
+
+        [FIX #1]: Sadece train verisi ile eğitim (test görmez).
+        [FIX #6]: Early stopping ile overfit koruması.
+        [FIX #7]: scale_pos_weight ile balance (params icinde).
+        """
+        model = xgb.XGBClassifier(
+            **params,
+            early_stopping_rounds=30,
+        )
+
+        model.fit(
+            X_train, y_train,
+            eval_set=[(X_val, y_val)],
+            verbose=False,
+        )
+
+        return model
+
+    # ══════════════════════════════════════════════════
+    # DEĞERLENDİRME  [FIX #8, #9]
+    # ══════════════════════════════════════════════════
+
+    def _evaluate_model(
+        self,
+        model: xgb.XGBClassifier,
+        X_test: np.ndarray,
+        y_test: np.ndarray,
+        raw_wr: float,
+    ) -> Dict:
+        """
+        Test seti üzerinde model değerlendirme.
+
+        [FIX #8]: AUC + Brier eklendi.
+        [FIX #9]: Threshold sweep eklendi.
+        """
+        y_pred = model.predict(X_test)
+        y_proba = model.predict_proba(X_test)[:, 1]
+
+        acc = accuracy_score(y_test, y_pred)
+        prec = precision_score(y_test, y_pred, zero_division=0)
+        rec = recall_score(y_test, y_pred, zero_division=0)
+        f1 = f1_score(y_test, y_pred, zero_division=0)
+
+        try:
+            auc = roc_auc_score(y_test, y_proba)
+        except Exception:
+            auc = 0.5
+
+        brier = brier_score_loss(y_test, y_proba)
+
+        # Filtered Win Rate
+        trade_mask = y_pred == 1
+        if trade_mask.sum() > 0:
+            filtered_wr = float(y_test[trade_mask].mean() * 100)
+            n_trades = int(trade_mask.sum())
+        else:
+            filtered_wr = 0.0
+            n_trades = 0
+
+        # ── Threshold Sweep ──
+        best_thr = 0.50
+        best_thr_wr = filtered_wr
+        best_thr_n = n_trades
+
+        for thr in np.arange(0.40, 0.80, 0.02):
+            thr_mask = y_proba >= thr
+            n = int(thr_mask.sum())
+            if n > max(10, len(y_test) * 0.05):
+                thr_wr = float(y_test[thr_mask].mean() * 100)
+                if thr_wr > best_thr_wr:
+                    best_thr_wr = thr_wr
+                    best_thr = float(thr)
+                    best_thr_n = n
+
+        # WR improvement
+        wr_improv = filtered_wr - raw_wr
+
+        # Quality verdict
+        if auc >= 0.62 and wr_improv >= 3.0:
+            verdict = "✅ GOOD"
+        elif auc >= 0.58 and wr_improv >= 1.0:
+            verdict = "⚠️  OK"
+        else:
+            verdict = "❌ WEAK"
+
+        # Rapor
+        print(f"\n  Metrikler:")
+        print(f"  Accuracy    : {acc*100:.1f}%")
+        print(f"  Precision   : {prec*100:.1f}%")
+        print(f"  Recall      : {rec*100:.1f}%")
+        print(f"  F1          : {f1*100:.1f}%")
+        print(f"  AUC         : {auc:.4f}")
+        print(f"  Brier       : {brier:.4f}")
+        print(f"  Raw WR      : {raw_wr:.1f}%")
+        print(f"  Filtered WR : {filtered_wr:.1f}% ({n_trades} trades)")
+        print(f"  WR Improv.  : {wr_improv:+.1f}%")
+        print(f"  Best Thr    : {best_thr:.2f} → {best_thr_wr:.1f}% ({best_thr_n} trades)")
+        print(f"  Verdict     : {verdict}")
+
+        return {
+            'accuracy': round(acc * 100, 2),
+            'precision': round(prec * 100, 2),
+            'recall': round(rec * 100, 2),
+            'f1': round(f1 * 100, 2),
+            'auc': round(auc, 4),
+            'brier': round(brier, 4),
+            'filtered_wr': round(filtered_wr, 1),
+            'n_trades_test': n_trades,
+            'wr_improvement': round(wr_improv, 1),
+            'best_threshold': round(best_thr, 2),
+            'best_threshold_wr': round(best_thr_wr, 1),
+            'best_threshold_n': best_thr_n,
+            'verdict': verdict,
+        }
+
+    # ══════════════════════════════════════════════════
+    # FEATURE IMPORTANCE
+    # ══════════════════════════════════════════════════
+
+    def _get_feature_importance(
+        self,
+        model: xgb.XGBClassifier,
+        features: List[str],
+    ) -> List[Tuple[str, float]]:
+        """Feature importance listesi (sıralı)."""
+        try:
+            importances = model.feature_importances_
+            if len(importances) != len(features):
+                return []
+
+            pairs = list(zip(features, [float(v) for v in importances]))
+            return sorted(pairs, key=lambda x: x[1], reverse=True)
+
+        except Exception:
+            return []
+
+    def _print_feature_importance(
+        self,
+        importance: List[Tuple[str, float]],
+        top_n: int = 12,
+    ):
+        """Feature importance ASCII tablosu with category tags."""
+        if not importance:
+            return
+
+        print(f"\n  Top {top_n} Features:")
+        print(f"  {'-'*55}")
+
+        for fname, imp in importance[:top_n]:
+            bar = '█' * int(imp * 50)
+            if fname.startswith('htf_'):
+                tag = 'HTF'
+            elif fname in CONTEXT_FEATURES:
+                tag = 'CTX'
+            elif fname in SIGNAL_FEATURES:
+                tag = 'SIG'
+            elif fname in MINIMAL_TECHNICAL:
+                tag = 'TCH'
+            else:
+                tag = '???'
+            print(f"  {fname:25s} {imp:.4f} {bar} [{tag}]")
+
+        # Category totals
+        ctx = sum(v for f, v in importance if f in CONTEXT_FEATURES)
+        htf = sum(v for f, v in importance if f.startswith('htf_'))
+        tch = sum(v for f, v in importance if f in MINIMAL_TECHNICAL)
+        sig = sum(v for f, v in importance if f in SIGNAL_FEATURES)
+
+        print(f"  {'-'*55}")
+        print(f"  Totals: CTX={ctx:.1%} SIG={sig:.1%} HTF={htf:.1%} TCH={tch:.1%}")
+
+        # Döngüsel feature kontrolü
+        circular = [f for f, _ in importance if f in EXCLUDED_CIRCULAR]
+        if circular:
+            print(f"  ⚠️  DÖNGÜSEL FEATURE TESPİT: {circular}")
+
+    # ══════════════════════════════════════════════════
+    # MODEL KAYDETME
+    # ══════════════════════════════════════════════════
+
+    def _save_model(
+        self,
+        model: xgb.XGBClassifier,
+        features: List[str],
+        regime_val: str,
+        timeframe: str,
+        version: str,
+        metrics: Dict,
+        params: Dict,
+        importance: List[Tuple],
+        raw_wr: float,
+        split_sizes: Dict,
+    ) -> str:
+        """Model + metadata kaydet."""
+        save_path = os.path.join(
+            self.model_dir,
+            f"meta_{regime_val}_{timeframe}.joblib",
+        )
+
+        meta_info = {
+            'regime': regime_val,
+            'timeframe': timeframe,
+            'version': version,
+            'trained_at': datetime.now().isoformat(),
+            'mtf_enabled': self.use_mtf,
+            'n_features': len(features),
+            'n_context': sum(1 for f in features if f in CONTEXT_FEATURES),
+            'n_htf': sum(1 for f in features if f.startswith('htf_')),
+            'raw_wr': round(raw_wr, 1),
+            **metrics,
+            'split': split_sizes,
+            'params': params,
+        }
+
+        model_data = {
+            'model': model,
+            'features': features,
+            'meta_info': meta_info,
+            'feature_importance': importance,
+        }
+
+        # Geriye uyumlu format: (model, features, meta_info)
+        joblib.dump(
+            (model, features, meta_info),
+            save_path,
+        )
+
+        print(f"  Saved: {save_path}")
+        return save_path
+
+    # ══════════════════════════════════════════════════
+    # YARDIMCI
+    # ══════════════════════════════════════════════════
+
+    def _find_regime_column(
+        self,
+        df: pd.DataFrame,
+    ) -> Optional[str]:
+        """
+        Regime kolonunu otomatik tespit et.
+
+        [FIX #5]: _regime, ml_regime, regime desteği.
+        """
+        for col_name in ['_regime', 'ml_regime', 'regime']:
+            if col_name in df.columns:
+                return col_name
+
+        return None
+
+    def _get_available_regimes(
+        self,
+        df: pd.DataFrame,
+        regime_col: str,
+    ) -> List[str]:
+        """Mevcut regime'leri sıralı döndür."""
+        actual = df[regime_col].unique().tolist()
+
+        # Bilinen sıralama
+        ordered = [
+            r for r in REGIME_VALUES
+            if r in actual
+        ]
+
+        # Bilinmeyen regime'ler
+        unknown = [
+            r for r in actual
+            if r not in REGIME_VALUES and r != 'unknown'
+        ]
+
+        return ordered + unknown
+
+    def _print_summary(self, results: Dict, elapsed: float):
+        """Özet rapor."""
+        print(f"\n  {'='*65}")
+        print(f"  META-TRAINER v{VERSION} SUMMARY | {elapsed:.1f}s")
+        print(f"  {'='*65}")
+
+        for rv, res in results.items():
+            if res.get('status') == 'trained':
+                v = res.get('verdict', '?')
+                print(
+                    f"  {v:6s} {rv:18s} "
+                    f"AUC={res['auc']:.3f} "
+                    f"FiltWR={res['filtered_wr']:.0f}% "
+                    f"Improv={res.get('wr_improvement', 0):+.1f}% "
+                    f"Thr={res['best_threshold']:.2f} "
+                    f"n={res.get('n_trades_test', 0)}"
+                )
+            else:
+                print(
+                    f"  [--]   {rv:18s} "
+                    f"{res.get('status', '?')}"
+                )
+
+        print(f"  {'='*65}")
+
+
+# ═══════════════════════════════════════════════════════════════
+# Bulk Entry Point
+# ═══════════════════════════════════════════════════════════════
+
+def train_meta_models_bulk(
+    meta_df: pd.DataFrame,
+    model_dir: str = "models/meta",
+    use_mtf: bool = True,
+    timeframe: str = "1h",
+    **kwargs,
+) -> Dict:
+    """Tüm regime'ler için model eğit (wrapper)."""
+    trainer = MetaTrainer(
+        model_dir=model_dir,
+        use_mtf=use_mtf,
+        n_trials=kwargs.get('n_trials', 25),
+        purge_bars=kwargs.get('purge_bars', DEFAULT_PURGE_BARS),
+    )
+    return trainer.train_all_regimes(
+        meta_df, timeframe=timeframe
+    )
+
+
+# ═══════════════════════════════════════════════════════════════
+# CLI (v2.0 — 4h veri + context features)
+# ═══════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Meta-Label Trainer v1.0")
+    parser = argparse.ArgumentParser(
+        description=f"Meta-Trainer v{VERSION}"
+    )
     parser.add_argument('--timeframe', type=str, default='1h')
-    parser.add_argument('--limit', type=int, default=3000)
+    parser.add_argument('--limit', type=int, default=10000)
     parser.add_argument('--trials', type=int, default=25)
-    parser.add_argument('--symbols', type=str, default='')
-    parser.add_argument('--cache', action='store_true')
+
+    top_50 = (
+        "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,ADAUSDT,"
+        "DOGEUSDT,AVAXUSDT,SHIBUSDT,DOTUSDT,"
+        "LINKUSDT,TRXUSDT,MATICUSDT,LTCUSDT,BCHUSDT,"
+        "UNIUSDT,ATOMUSDT,XMRUSDT,ETCUSDT,ICPUSDT,"
+        "XLMUSDT,FILUSDT,HBARUSDT,APTUSDT,LDOUSDT,"
+        "ARBUSDT,MKRUSDT,VETUSDT,OPUSDT,INJUSDT,"
+        "GRTUSDT,RNDRUSDT,THETAUSDT,FTMUSDT,SNXUSDT,"
+        "AAVEUSDT,SANDUSDT,AXSUSDT,EGLDUSDT,NEOUSDT,"
+        "KAVAUSDT,CHZUSDT,GALAUSDT,ENJUSDT,ZILUSDT,"
+        "CRVUSDT,LUNA2USDT,MANAUSDT,ROSEUSDT,DYDXUSDT"
+    )
+    parser.add_argument('--symbols', type=str, default=top_50)
+    parser.add_argument('--model-dir', type=str, default='ai/models/meta')
     args = parser.parse_args()
 
-    syms = [s.strip() for s in args.symbols.split(',') if s.strip()] or None
+    symbols = [s.strip() for s in args.symbols.split(',') if s.strip()]
 
-    trainer = MetaTrainer(timeframe=args.timeframe)
-    results = trainer.train_all(
-        symbols=syms,
-        limit=args.limit,
+    print(f"\n[CLI] Meta-Trainer v{VERSION} (Context-Aware)")
+    print(f"  Symbols: {len(symbols)} | TF: {args.timeframe}")
+
+    import sys
+    from pathlib import Path
+
+    backend_dir = str(Path(__file__).resolve().parent.parent.parent)
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+
+    from backtest.data_fetcher import DataFetcher
+    from backtest.signals import add_all_indicators, add_meta_context_features
+    from ai.xgboost_trainer import generate_features
+    from ai.meta_labelling.meta_label_generator import MetaLabelGenerator
+
+    fetcher = DataFetcher('binance')
+    all_meta_dfs = []
+
+    for sym in symbols:
+        print(f"\n[DATA] {sym}...")
+        try:
+            # 1h (veya seçilen TF) veri
+            raw_df = fetcher.fetch_ohlcv(
+                sym, args.timeframe, limit=args.limit
+            )
+            if raw_df is None or len(raw_df) < 500:
+                print(f"  [SKIP] Yetersiz veri")
+                continue
+
+            if not isinstance(raw_df.index, pd.DatetimeIndex):
+                if 'timestamp' in raw_df.columns:
+                    raw_df.set_index('timestamp', inplace=True)
+                else:
+                    raw_df.index = pd.to_datetime(raw_df.index)
+            raw_df = raw_df.sort_index()
+
+            # Indicators + features + CONTEXT (v2.0)
+            df = add_all_indicators(raw_df)
+            df = generate_features(df)
+            df = add_meta_context_features(df)
+
+            # ── HTF veri (v2.0) — TF'ye göre dinamik ──
+            htf_map = {'5m': '1h', '15m': '1h', '1h': '4h', '4h': '1d'}
+            htf_tf = htf_map.get(args.timeframe, '4h')
+            htf_ratio = {'5m': 12, '15m': 4, '1h': 4, '4h': 6}.get(args.timeframe, 4)
+
+            df_4h = None
+            try:
+                htf_limit = max(args.limit // htf_ratio, 500)
+                raw_htf = fetcher.fetch_ohlcv(sym, htf_tf, limit=htf_limit)
+
+                if raw_htf is not None and len(raw_htf) >= 200:
+                    if not isinstance(raw_htf.index, pd.DatetimeIndex):
+                        if 'timestamp' in raw_htf.columns:
+                            raw_htf.set_index('timestamp', inplace=True)
+                        else:
+                            raw_htf.index = pd.to_datetime(raw_htf.index)
+                    raw_htf = raw_htf.sort_index()
+                    df_4h = add_all_indicators(raw_htf)
+                    print(f"  [OK] HTF({htf_tf}): {len(df_4h)} bars")
+                else:
+                    print(f"  [WARN] HTF({htf_tf}) yetersiz")
+            except Exception as e_htf:
+                print(f"  [WARN] HTF({htf_tf}) hata: {e_htf}")
+
+            # Meta-labels (v2.0: context features + 4h)
+            generator = MetaLabelGenerator(
+                timeframe=args.timeframe,
+                progress_interval=5000,
+            )
+            meta_df, stats = generator.generate(
+                df, df_4h=df_4h, symbol=sym, verbose=True,
+            )
+
+            if not meta_df.empty:
+                all_meta_dfs.append(meta_df)
+
+        except Exception as e:
+            print(f"  [ERROR] {sym}: {e}")
+            traceback.print_exc()
+
+    if not all_meta_dfs:
+        print("\n[FAIL] Meta-data üretilemedi!")
+        exit(1)
+
+    total_meta_df = pd.concat(all_meta_dfs, axis=0)
+    print(f"\n[CLI] Combined: {total_meta_df.shape}")
+
+    # v2.0 context feature varlık kontrolü
+    ctx_present = [c for c in CONTEXT_FEATURES if c in total_meta_df.columns]
+    ctx_missing = [c for c in CONTEXT_FEATURES if c not in total_meta_df.columns]
+    print(f"  Context features: {len(ctx_present)}/{len(CONTEXT_FEATURES)} mevcut")
+    if ctx_missing:
+        print(f"  Missing: {ctx_missing[:10]}...")
+
+    results = train_meta_models_bulk(
+        meta_df=total_meta_df,
+        model_dir=args.model_dir,
+        timeframe=args.timeframe,
         n_trials=args.trials,
-        use_cache=args.cache,
+        use_mtf=True,
     )
 
-    print("\n✅ Meta-Label eğitimi tamamlandı!")
-    print(json.dumps({
-        k: v for k, v in results.items()
-        if k not in ('meta_stats',)
-    }, indent=2, default=str))
+    print(f"\n✅ Meta-Label eğitimi tamamlandı (v{VERSION})!")
+    print(json.dumps(results, indent=2, default=str))

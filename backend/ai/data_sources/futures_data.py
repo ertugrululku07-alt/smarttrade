@@ -132,12 +132,12 @@ def enrich_ohlcv_with_futures(
         df['long_short_ratio']   = ls_val
 
         if not silent:
-            print(f"  📡 Futures data: FR={df['funding_rate'].iloc[-1]:.5f} "
+            print(f"  [NET] Futures data: FR={df['funding_rate'].iloc[-1]:.5f} "
                   f"OI={oi_val:.0f} L/S={ls_val:.2f}")
 
     except Exception as e:
         if not silent:
-            print(f"  ⚠️ Futures data error ({symbol}): {e}")
+            print(f"  [WARN] Futures data error ({symbol}): {e}")
         # Fallback: sıfır doldur
         for col in ['funding_rate', 'funding_rate_ma8', 'funding_rate_trend',
                     'open_interest_norm', 'long_short_ratio']:

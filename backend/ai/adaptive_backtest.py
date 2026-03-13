@@ -29,7 +29,7 @@ warnings.filterwarnings("ignore")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backtest.data_fetcher import DataFetcher
-from backtest.signals import add_all_indicators
+from backtest.signals import add_all_indicators, add_meta_context_features
 from ai.data_sources.futures_data import enrich_ohlcv_with_futures
 from ai.xgboost_trainer import generate_features
 from ai.regime_detector import Regime, detect_regime
@@ -167,6 +167,7 @@ class AdaptiveBacktest:
         self,
         df: pd.DataFrame,
         df_secondary: Optional[pd.DataFrame] = None,
+        df_4h: Optional[pd.DataFrame] = None,
         symbol: str = "UNKNOWN",
         verbose: bool = False,
     ) -> BacktestResult:
@@ -248,13 +249,23 @@ class AdaptiveBacktest:
             if len(open_trades) >= self.max_concurrent:
                 continue
 
-            # -- v1.5: Hybrid Decision logic -------------------
+            # -- v2.0: Multi-TF Decision (4h→1h→15m) ----------
             df_sec_chunk = None
             if df_secondary is not None:
                 ts = pd.Timestamp(timestamps[i])
                 df_sec_chunk = df_secondary[df_secondary.index <= ts]
 
-            decision = self.engine.decide(df.iloc[:i + 1], df_secondary=df_sec_chunk)
+            df_4h_chunk = None
+            if df_4h is not None:
+                ts = pd.Timestamp(timestamps[i])
+                df_4h_chunk = df_4h[df_4h.index <= ts]
+
+            decision = self.engine.decide(
+                df.iloc[:i + 1],
+                df_secondary=df_sec_chunk,
+                df_4h=df_4h_chunk,
+                symbol=symbol,
+            )
             
             # Rejim ve meta verilerini al
             regime_val = decision.regime
@@ -628,36 +639,54 @@ def run_full_backtest(
             df = add_all_indicators(df)
             df = enrich_ohlcv_with_futures(df, sym, silent=True)
             df = generate_features(df)
+            df = add_meta_context_features(df)
 
-            # -- v1.5: Hybrid Data Fetching ----------------
+            # -- v2.0: Multi-TF Data Fetching ----------------
             df_1h = df.copy()
             df_15m = None
-            
+            df_4h = None
+
             try:
-                # 15m verisini de çek (Hibrit analiz için)
                 df_15m = fetcher.fetch_ohlcv(sym, "15m", limit=limit * 4)
                 if df_15m is not None and not df_15m.empty:
                     df_15m = add_all_indicators(df_15m)
                     df_15m = generate_features(df_15m)
+                    df_15m = add_meta_context_features(df_15m)
             except Exception as e:
-                print(f"  [WARN] {sym} 15m veri cekme hatasi (Hybrid atlaniyor): {e}")
+                print(f"  [WARN] {sym} 15m hatasi: {e}")
+
+            try:
+                df_4h = fetcher.fetch_ohlcv(sym, "4h", limit=max(limit // 4, 500))
+                if df_4h is not None and not df_4h.empty:
+                    df_4h = add_all_indicators(df_4h)
+            except Exception as e:
+                print(f"  [WARN] {sym} 4h hatasi: {e}")
 
             # Son %30'u test olarak kullan
             test_start = int(len(df_1h) * (1 - test_split))
             test_df_1h = df_1h.iloc[test_start:].copy()
-            
+
             # 15m verisini 1H test aralığına göre filtrele
             test_df_15m = None
             if df_15m is not None:
                 start_ts = test_df_1h.index[0]
                 test_df_15m = df_15m[df_15m.index >= (start_ts - pd.Timedelta(hours=24))].copy()
 
+            # 4h verisini test aralığına göre filtrele
+            test_df_4h = None
+            if df_4h is not None and not df_4h.empty:
+                start_ts = test_df_1h.index[0]
+                test_df_4h = df_4h[df_4h.index <= test_df_1h.index[-1]].copy()
+
             if len(test_df_1h) < 100:
                 skipped.append(sym)
                 continue
 
-            # Backtest çalıştır (Hybrid)
-            bt_result = engine.run(test_df_1h, df_secondary=test_df_15m, symbol=sym, verbose=verbose)
+            # Backtest çalıştır (Multi-TF: 4h→1h→15m)
+            bt_result = engine.run(
+                test_df_1h, df_secondary=test_df_15m,
+                df_4h=test_df_4h, symbol=sym, verbose=verbose,
+            )
 
             if bt_result.total_trades > 0:
                 all_results.append({

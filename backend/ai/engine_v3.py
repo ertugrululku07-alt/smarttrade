@@ -154,11 +154,13 @@ class PositionManagerV3:
 
         return {'action': 'HOLD', 'stop': active_stop}
 
+from ai.mtf_analyzer import MTFAnalyzer
+
 class HybridTradingEngineV31:
     def __init__(self, config=None):
         self.config = config or {
-            'max_daily_loss_pct': 1.0,      # 1.0 = %100 kayıp (Test amaçlı devredışı)
-            'max_consecutive_losses': 999,  # Test amaçlı devredışı
+            'max_daily_loss_pct': 1.0,
+            'max_consecutive_losses': 999,
             'risk_per_trade': 0.01,
             'min_rr': 2.0,
             'score_threshold': 7,
@@ -170,6 +172,7 @@ class HybridTradingEngineV31:
         self.daily_start_balance = None
         self.last_reset_date = datetime.date.today()
         self.logger = TradeLogger()
+        self.mtf_analyzer = MTFAnalyzer()
 
     def _validate_config(self):
         c = self.config
@@ -259,32 +262,57 @@ class HybridTradingEngineV31:
             return {'status': 'WAIT', 'reason': 'NUKE'}
 
         # 3. Sinyal Tarama
-        btc_trend = 'LONG' if data['btc_4h']['close'].iloc[-1] > data['btc_4h']['close'].ewm(span=200).mean().iloc[-1] else 'SHORT'
+        # Phase 1: MTF Context (4h)
+        htf_ctx = self.mtf_analyzer.analyze_htf(data['df_4h'], data.get('coin', 'UNKNOWN'))
+        
         results = []
         for side in ['LONG', 'SHORT']:
             same_dir = [p for p in open_positions if p.get('side') == side]
             if len(same_dir) >= self.config['max_same_side_positions']: continue
             
+            # MTF Adjustment
+            mtf_adj = self.mtf_analyzer.get_signal_adjustment(htf_ctx, side)
+            if not mtf_adj.allowed: continue
+
             sweep = self.check_liquidity_sweep(data['df_15m'], side)
             mss = self.check_mss(data['df_15m'], atr, side, sweep)
-            score = (3 if sweep['is_swept'] else 0) + (4 if mss.get('detected') and not mss.get('is_god') else 2 if mss.get('detected') else 0) + (3 if side == btc_trend else 1)
             
-            if score >= self.config['score_threshold']:
+            # Base Skoru
+            base_score = (3 if sweep['is_swept'] else 0) + (4 if mss.get('detected') and not mss.get('is_god') else 2 if mss.get('detected') else 0)
+            
+            # MTF Modifikasyonu (Phase 1)
+            final_score = base_score + mtf_adj.score_modifier + 3 # +3 baseline compatibility
+            
+            if final_score >= self.config['score_threshold']:
                 entry_data = self.calculate_fvg_entry(data['df_15m'], side)
                 if entry_data:
                     stop = (sweep['level'] - atr*0.5 if side=='LONG' else sweep['level'] + atr*0.5) if sweep['level'] else (entry_data['entry'] + atr*2*(-1 if side=='LONG' else 1))
+                    
+                    # MTF SL/TP Adjustments
                     risk = max(abs(entry_data['entry'] - stop), 0.0001)
                     target = data['df_4h']['high' if side=='LONG' else 'low'].iloc[-50:].max() if side=='LONG' else data['df_4h']['low'].iloc[-50:].min()
                     reward = (target - entry_data['entry']) if side=='LONG' else (entry_data['entry'] - target)
+                    
+                    # Apply MTF Multipliers
+                    risk *= mtf_adj.sl_multiplier
+                    reward *= mtf_adj.tp_multiplier
+                    
+                    # Recalculate Stop/TP
+                    if side == 'LONG':
+                        stop = entry_data['entry'] - risk
+                    else:
+                        stop = entry_data['entry'] + risk
+
                     if (reward / risk) >= self.config['min_rr']:
                         results.append({
                             **entry_data, 
                             'side': side, 
-                            'score': score, 
+                            'score': final_score, 
                             'stop': stop, 
                             'rr': round(reward/risk, 2), 
                             'risk_dist': risk,
-                            'atr': atr # v3.4 propagation
+                            'atr': atr,
+                            'mtf_reason': mtf_adj.reason
                         })
 
         if not results: return {'status': 'WAIT', 'reason': 'No Setup'}
@@ -302,7 +330,7 @@ class HybridTradingEngineV31:
             'atr': atr,
             'signal': best['side']
         }
-        logger_id = self.logger.log_entry(trade_packet, {'btc_trend': btc_trend, 'coin': data.get('coin', 'COIN')})
+        logger_id = self.logger.log_entry(trade_packet, {'coin': data.get('coin', 'COIN')})
         trade_packet['logger_id'] = logger_id
         return trade_packet
 

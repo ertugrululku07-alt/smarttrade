@@ -11,7 +11,7 @@ from backtest.data_fetcher import DataFetcher
 from backtest.signals import add_all_indicators, generate_signals
 
 def run_filtered_backtest(symbol="BTC/USDT", timeframe="1h", limit=3000):
-    print(f"📡 Fetching {limit} candles for Filtered Simulation...")
+    print(f"[NET] Fetching {limit} candles for Filtered Simulation...")
     fetcher = DataFetcher('binance')
     df = fetcher.fetch_ohlcv(symbol, timeframe, limit=limit)
     # fetcher.close()
@@ -97,7 +97,7 @@ def run_filtered_backtest(symbol="BTC/USDT", timeframe="1h", limit=3000):
     total_pnl_usd = sum(t['pnl_usd'] for t in trades)
     
     print("\n" + "="*40)
-    print(f"💎 FILTERED BACKTEST (AI SIMULATION)")
+    print(f"[*] FILTERED BACKTEST (AI SIMULATION)")
     print(f"Total Trades: {len(df_t)} (Filter worked! Reduced from 74 to {len(df_t)})")
     print(f"Win Rate: {win_rate:.2f}% (Significant increase!)")
     print(f"Total PnL USD: ${total_pnl_usd:.2f}")

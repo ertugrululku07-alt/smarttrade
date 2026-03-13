@@ -8,7 +8,10 @@ import uuid
 from datetime import datetime
 
 from backtest.data_fetcher import DataFetcher
-from ai.engine_v3 import HybridTradingEngineV31, PositionManagerV3
+from ai.engine_v3 import PositionManagerV3
+from ai.adaptive_live_adapter import (
+    generate_signal, should_open_position, get_tp_sl_prices
+)
 
 SCAN_SYMBOLS = [
     "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT",
@@ -80,8 +83,8 @@ class LivePaperTrader:
         self.secondary_tf = "15m"
 
         self.symbol_consecutive_losses = {}
+        self.consecutive_losses = 0
 
-        self.engine_v3 = HybridTradingEngineV31()
         self.position_managers = {}
 
         self.load_state()
@@ -101,7 +104,7 @@ class LivePaperTrader:
             self.closed_trades = state.get('closed_trades', [])
             self.trade_counter = state.get('trade_counter', 0)
             self.max_open_trades_limit = state.get('max_open_trades_limit', 5)
-            self.engine_v3.consecutive_losses = state.get('consecutive_losses', 0)
+            self.consecutive_losses = state.get('consecutive_losses', 0)
             self.symbol_consecutive_losses = state.get('symbol_consecutive_losses', {})
 
             # Normalize legacy string logs → dict logs
@@ -114,11 +117,11 @@ class LivePaperTrader:
                     self.logs.append(entry)
 
             self.log(
-                f"💾 State loaded. Balance: ${self.balance:.2f}, "
+                f"[SAVE] State loaded. Balance: ${self.balance:.2f}, "
                 f"Open: {len(self.open_trades)}, Pending: {len(self.pending_orders)}"
             )
         except Exception as e:
-            self.log(f"⚠️ Error loading state: {e}. Starting fresh.")
+            self.log(f"[WARN] Error loading state: {e}. Starting fresh.")
 
     def _sanitize_for_json(self, obj):
         """Recursively convert numpy/pandas types to native Python."""
@@ -145,7 +148,7 @@ class LivePaperTrader:
                     'logs': self.logs,
                     'trade_counter': self.trade_counter,
                     'max_open_trades_limit': self.max_open_trades_limit,
-                    'consecutive_losses': self.engine_v3.consecutive_losses,
+                    'consecutive_losses': self.consecutive_losses,
                     'symbol_consecutive_losses': self.symbol_consecutive_losses,
                 }
             
@@ -153,7 +156,7 @@ class LivePaperTrader:
             with open(self.state_file, 'w', encoding='utf-8') as f:
                 json.dump(clean_state, f, indent=4)
         except Exception as e:
-            self.log(f"⚠️ Error saving state: {e}")
+            self.log(f"[WARN] Error saving state: {e}")
 
     def _force_save(self):
         """Immediate save for important events (trade open/close)."""
@@ -173,7 +176,7 @@ class LivePaperTrader:
         if self.is_running:
             return
         self.is_running = True
-        self.log("🤖 Quant AI Live Paper Trader STARTED.")
+        self.log("[BOT] Quant AI Live Paper Trader STARTED.")
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
         self._ticker_thread = threading.Thread(target=self._ticker_loop, daemon=True)
@@ -181,7 +184,7 @@ class LivePaperTrader:
 
     def stop(self):
         self.is_running = False
-        self.log("🛑 Quant AI Live Paper Trader STOPPED.")
+        self.log("[STOP] Quant AI Live Paper Trader STOPPED.")
         self._force_save()
 
     def log(self, msg: str):
@@ -325,7 +328,7 @@ class LivePaperTrader:
             )
             if triggered:
                 self.log(
-                    f"⚡ PENDING FILLED: {sym} {side} @ {price:.6f} "
+                    f"[ZAP] PENDING FILLED: {sym} {side} @ {price:.6f} "
                     f"(Target: {entry:.6f})"
                 )
                 self.pending_orders.remove(p)
@@ -395,7 +398,7 @@ class LivePaperTrader:
         if res['action'] == 'PARTIAL':
             t['sl_price'] = res['stop']
             self.log(
-                f"💰 PARTIAL {t['symbol']}: {res['reason']} "
+                f"[MONEY] PARTIAL {t['symbol']}: {res['reason']} "
                 f"| New SL: {res['stop']:.6f}"
             )
         elif res['action'] == 'UPDATE_STOP':
@@ -420,28 +423,28 @@ class LivePaperTrader:
                     with self.trades_lock:
                         self.scanned_symbols = all_pairs
                     self.log(
-                        f"🔄 Dynamic symbols: {len(self.scanned_symbols)} USDT pairs"
+                        f"[SYNC] Dynamic symbols: {len(self.scanned_symbols)} USDT pairs"
                     )
                 except Exception as e:
                     msg = str(e).lower()
                     if "451" in msg or "restricted" in msg:
                         self.log(
-                            "⚠️ Binance region restriction (HTTP 451). "
+                            "[WARN] Binance region restriction (HTTP 451). "
                             "Using fallback symbols."
                         )
                     else:
-                        self.log(f"⚠️ Symbol fetch failed: {e}. Using fallback.")
+                        self.log(f"[WARN] Symbol fetch failed: {e}. Using fallback.")
 
-                self.log(f"🔍 Scanning {len(self.scanned_symbols)} markets...")
+                self.log(f"[SEARCH] Scanning {len(self.scanned_symbols)} markets...")
                 self._scan_and_trade(fetcher)
 
             except Exception as e:
                 err = str(e).lower()
                 if "429" in err or "rate" in err:
-                    self.log(f"⚠️ Rate limit: {e}. Backing off...")
+                    self.log(f"[WARN] Rate limit: {e}. Backing off...")
                     time.sleep(5)
                 else:
-                    self.log(f"❌ Scan loop error: {e}")
+                    self.log(f"[FAIL] Scan loop error: {e}")
                 time.sleep(0.5)
 
             # Wait between scan cycles
@@ -455,10 +458,10 @@ class LivePaperTrader:
         try:
             btc_4h = fetcher.fetch_ohlcv("BTC/USDT", "4h", limit=100)
             if btc_4h.empty:
-                self.log("⚠️ BTC 4h empty — skipping scan.")
+                self.log("[WARN] BTC 4h empty — skipping scan.")
                 return
         except Exception as e:
-            self.log(f"⚠️ BTC 4h fetch error: {e}")
+            self.log(f"[WARN] BTC 4h fetch error: {e}")
             return
 
         for i, symbol in enumerate(self.scanned_symbols[:]):
@@ -466,7 +469,11 @@ class LivePaperTrader:
                 break
 
             try:
-                df_15m = fetcher.fetch_ohlcv(symbol, "15m", limit=100)
+                df_1h = fetcher.fetch_ohlcv(symbol, self.timeframe, limit=100)
+                if df_1h.empty or len(df_1h) < 50:
+                    continue
+
+                df_15m = fetcher.fetch_ohlcv(symbol, self.secondary_tf, limit=100)
                 if df_15m.empty or len(df_15m) < 50:
                     continue
 
@@ -475,7 +482,7 @@ class LivePaperTrader:
                     continue
 
                 if i % 30 == 0:
-                    self.log(f"🕯️ Scanning {symbol} ({i}/{len(self.scanned_symbols)})")
+                    self.log(f"[*][*] Scanning {symbol} ({i}/{len(self.scanned_symbols)})")
 
                 with self.trades_lock:
                     has_active = any(
@@ -484,63 +491,75 @@ class LivePaperTrader:
                     has_pending = any(
                         p['symbol'] == symbol for p in self.pending_orders
                     )
-                if has_active or has_pending:
-                    continue
-
-                engine_data = {
-                    'balance': self.balance,
-                    'df_15m': df_15m,
-                    'df_4h': df_4h,
-                    'btc_4h': btc_4h,
-                    'coin': symbol,
-                }
-
-                with self.trades_lock:
                     active_count = len(self.open_trades) + len(self.pending_orders)
                     can_open = active_count < self.max_open_trades_limit
-                    trades_snapshot = list(self.open_trades) # v3.6 Safe snapshot
 
-                if not can_open:
+                if has_active or has_pending or not can_open:
                     continue
 
-                decision = self.engine_v3.execute_decision_cycle(
-                    engine_data, trades_snapshot
+                # --- HYBRID AI ENGINE DECISION ---
+                decision = generate_signal(
+                    df=df_1h,
+                    df_secondary=df_15m,
+                    df_4h=df_4h,
+                    symbol=symbol,
+                    timeframe=self.timeframe,
+                    secondary_tf=self.secondary_tf
                 )
 
-                if decision['status'] == 'TRADE':
-                    p_order = {
-                        "symbol": symbol,
-                        "side": decision['side'],
-                        "entry_price": decision['entry'],
-                        "sl_price": decision['stop'],
-                        "absolute_qty": decision['quantity'],
-                        "atr": decision.get('atr', 0.001),
-                        "logger_id": decision.get('logger_id'),
-                        "signal_result": decision,
-                        "created_at": time.time(),
-                    }
-                    with self.trades_lock:
-                        self.pending_orders.append(p_order)
-                    self._force_save()
-                    self.log(
-                        f"📝 PENDING ORDER: {symbol} {decision['side']} "
-                        f"@ {decision['entry']:.6f} | Type: {decision['type']}"
-                    )
+                if should_open_position(decision):
+                    if self.consecutive_losses >= 10:
+                        self.log("[STOP] ENGINE HALT: Max consecutive losses limit reached")
+                        self.stop()
+                        break
 
-                elif decision['status'] == 'HALT':
-                    self.log(f"🛑 ENGINE HALT: {decision['reason']}")
-                    self.stop()
-                    break
+                    cp = float(df_1h['close'].iloc[-1])
+                    
+                    tp_price = decision.get('tp_price', 0.0)
+                    sl_price = decision.get('sl_price', 0.0)
+                    
+                    if tp_price == 0.0 or sl_price == 0.0:
+                        # Fallback TP/SL
+                        atr_proxy = df_1h['high'].iloc[-14:].max() - df_1h['low'].iloc[-14:].min()
+                        tp_price, sl_price = get_tp_sl_prices(decision, cp, atr_proxy)
+
+                    risk_abs = abs(cp - sl_price)
+                    if risk_abs <= 0: risk_abs = cp * 0.01
+                    
+                    # Size calculation
+                    loss_scaling = {0: 1.0, 1: 1.0, 2: 0.8, 3: 0.6}.get(self.consecutive_losses, 0.5)
+                    position_conf = decision.get('position_size', 0.5)
+                    risk_amount = self.balance * self.risk_pct * loss_scaling * position_conf
+                    raw_qty = risk_amount / risk_abs
+                    max_qty = (self.balance * self.leverage) / cp
+                    qty = min(raw_qty, max_qty)
+
+                    logger_id = f"{symbol}_{decision['signal']}_{int(time.time())}"
+                    atr_val = risk_abs / decision.get('sl_mult', 1.0)
+
+                    with self.trades_lock:
+                        self._open_locked(
+                            symbol=symbol,
+                            side=decision['signal'],
+                            price=cp,
+                            multiplier=1.0,
+                            tp_price=tp_price,
+                            sl_price=sl_price,
+                            signal_result=decision,
+                            absolute_qty=qty,
+                            atr=atr_val,
+                            logger_id=logger_id
+                        )
 
                 time.sleep(0.1)
 
             except Exception as e:
-                # ✅ FIX: Single except — log + rate-limit backoff
+                # [OK] FIX: Single except — log + rate-limit backoff
                 err_str = str(e).lower()
                 if "429" in err_str or "rate" in err_str:
                     time.sleep(1.0)
                 else:
-                    self.log(f"❌ Error scanning {symbol}: {e}")
+                    self.log(f"[FAIL] Error scanning {symbol}: {e}")
                     time.sleep(0.5)
 
     # ──────────────────────────── Trade Execution ─────────────────────────────
@@ -603,7 +622,7 @@ class LivePaperTrader:
         self.position_managers[tid] = PositionManagerV3(t, atr)
 
         self.log(
-            f"🟢 OPEN {side} {symbol} @ {price:.6f} | "
+            f"[GRN] OPEN {side} {symbol} @ {price:.6f} | "
             f"Score: {t['soft_score']}/5 | Type: {t['entry_type']} | "
             f"Qty: {qty:.4f}"
         )
@@ -643,9 +662,12 @@ class LivePaperTrader:
             # Manager cleanup
             self.position_managers.pop(t['id'], None)
 
-            # ✅ FIX: record_trade_result called exactly ONCE
+            # is_win tracking directly replacing the EngineV3 logic
             is_win = pnl > 0
-            self.engine_v3.record_trade_result(is_win)
+            if is_win:
+                self.consecutive_losses = max(0, self.consecutive_losses - 1)
+            else:
+                self.consecutive_losses += 1
 
             # Symbol consecutive loss tracking
             if is_win:
@@ -657,7 +679,7 @@ class LivePaperTrader:
 
             max_p = t.get('max_pnl_pct', 0)
             pnl_str = f"+${pnl:.2f}" if pnl > 0 else f"-${abs(pnl):.2f}"
-            icon = "✅" if pnl > 0 else "❌"
+            icon = "[OK]" if pnl > 0 else "[FAIL]"
             self.log(
                 f"{icon} CLOSE {t['side']} {symbol} @ {exit_price:.6f} | "
                 f"PnL: {pnl_str} ({pnl_pct:.2f}%) | "
@@ -702,5 +724,5 @@ class LivePaperTrader:
             return {"success": False, "message": "Invalid value"}
         self.max_open_trades_limit = max_open_trades
         self._force_save()
-        self.log(f"⚙️ Max open trades → {max_open_trades}")
+        self.log(f"[GEAR] Max open trades → {max_open_trades}")
         return {"success": True, "message": "Settings updated"}

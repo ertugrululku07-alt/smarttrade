@@ -11,16 +11,16 @@ from backtest.data_fetcher import DataFetcher
 from backtest.signals import add_all_indicators, generate_signals
 
 def run_upgraded_backtest(symbol="BTC/USDT", timeframe="1h", limit=3000):
-    print(f"📡 Fetching {limit} candles for {symbol} ({timeframe})...")
+    print(f"[NET] Fetching {limit} candles for {symbol} ({timeframe})...")
     fetcher = DataFetcher('binance')
     df = fetcher.fetch_ohlcv(symbol, timeframe, limit=limit)
     # fetcher.close() # CCXT sync skip close
 
     if df.empty:
-        print("❌ Data fetch failed.")
+        print("[FAIL] Data fetch failed.")
         return
 
-    print("📊 Adding indicators and generating signals...")
+    print("[DATA] Adding indicators and generating signals...")
     df = add_all_indicators(df)
     # Filter only signals
     signals, scores = generate_signals(df, strategy="confluence")
@@ -159,7 +159,7 @@ def run_upgraded_backtest(symbol="BTC/USDT", timeframe="1h", limit=3000):
     
     report = []
     report.append("\n" + "="*40)
-    report.append(f"🏆 BACKTEST RESULTS ({symbol} - {timeframe} - {limit} candles)")
+    report.append(f"[*] BACKTEST RESULTS ({symbol} - {timeframe} - {limit} candles)")
     report.append(f"Total Trades: {len(df_trades)}")
     report.append(f"Win Rate: {win_rate:.2f}%")
     report.append(f"Total PnL USD: ${total_pnl_usd:.2f}")

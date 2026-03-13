@@ -154,7 +154,7 @@ def detect_regime(df: pd.DataFrame, lookback: int = 50) -> Tuple[Regime, dict]:
     if directionality > 0.25:
         scores[Regime.TRENDING] += 1.5
 
-    # --- MEAN REVERTING --- (✅ Fix: Duplike skorlama kaldırıldı)
+    # --- MEAN REVERTING --- ([OK] Fix: Duplike skorlama kaldırıldı)
     if adx < 15:
         scores[Regime.MEAN_REVERTING] += 3.0
     elif adx < 20:
@@ -284,7 +284,7 @@ def detect_regime_series(
             dtype=float,
         )
 
-        # ✅ Fix: raw=True + numpy tabanlı mode (pd.Series overhead yok)
+        # [OK] Fix: raw=True + numpy tabanlı mode (pd.Series overhead yok)
         smoothed = regime_numeric.rolling(
             smooth_window, center=False, min_periods=1
         ).apply(_fast_mode, raw=True)

@@ -14,27 +14,27 @@ from ai.data_sources.futures_data import enrich_ohlcv_with_futures
 from ai.xgboost_trainer import generate_features
 
 def test_hybrid_flow():
-    print("🚀 Starting Hybrid Live Smoke Test...")
+    print("[START] Starting Hybrid Live Smoke Test...")
     fetcher = DataFetcher('binance')
     symbol = "BTC/USDT"
     
-    print(f"📥 Fetching 1H data for {symbol}...")
+    print(f"[*] Fetching 1H data for {symbol}...")
     df_1h = fetcher.fetch_ohlcv(symbol, '1h', limit=100)
-    print(f"📥 Fetching 15m data for {symbol}...")
+    print(f"[*] Fetching 15m data for {symbol}...")
     df_15m = fetcher.fetch_ohlcv(symbol, '15m', limit=100)
     
     if df_1h.empty or df_15m.empty:
-        print("❌ Error: Fetching failed.")
+        print("[FAIL] Error: Fetching failed.")
         return
 
-    print("🔧 Adding indicators and features...")
+    print("[*] Adding indicators and features...")
     df_1h = add_all_indicators(df_1h)
     df_1h = generate_features(df_1h)
     
     df_15m = add_all_indicators(df_15m)
     df_15m = generate_features(df_15m)
 
-    print("🧠 Generating Hybrid Signal...")
+    print("[AI] Generating Hybrid Signal...")
     result = generate_signal(
         df_1h, 
         df_secondary=df_15m, 
@@ -43,7 +43,7 @@ def test_hybrid_flow():
         secondary_tf='15m'
     )
     
-    print("\n📊 TEST RESULTS:")
+    print("\n[DATA] TEST RESULTS:")
     print(f"  Symbol      : {symbol}")
     print(f"  Signal      : {result['signal']}")
     print(f"  Confidence  : {result['confidence']:.4f}")
@@ -52,9 +52,9 @@ def test_hybrid_flow():
     print(f"  Reason      : {result['reason']}")
     
     if result['regime'] != 'unknown':
-        print("\n✅ Smoke test PASSED: Hybrid logic is wired up correctly.")
+        print("\n[OK] Smoke test PASSED: Hybrid logic is wired up correctly.")
     else:
-        print("\n❌ Smoke test FAILED: Regime is unknown.")
+        print("\n[FAIL] Smoke test FAILED: Regime is unknown.")
 
 if __name__ == "__main__":
     test_hybrid_flow()

@@ -69,6 +69,23 @@ class DataFetcher:
             print(f"Error fetching data from {self.exchange.id} for {symbol}: {e}")
             return pd.DataFrame()
             
+    def fetch_multi_tf(self, symbol: str, timeframes: list = None, limit: int = 500) -> dict:
+        """
+        Çoklu timeframe veri çekme (Phase 1: 4h Trend + Primary).
+        """
+        if timeframes is None:
+            timeframes = ['4h', '1h', '15m']
+            
+        result = {}
+        for tf in timeframes:
+            try:
+                df = self.fetch_ohlcv(symbol, tf, limit=limit)
+                if not df.empty:
+                    result[tf] = df
+            except Exception as e:
+                print(f"Error fetching {tf} for {symbol}: {e}")
+        return result
+
     def close(self):
         """Exchange session'ı kapatır"""
         self.exchange.close()

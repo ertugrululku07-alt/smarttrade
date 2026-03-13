@@ -4,10 +4,11 @@ from .mean_reversion import MeanReversionStrategy
 from .volatility_strategy import VolatilityStrategy
 from .scalping_strategy import ScalpingStrategy
 from .ict_strategy import ICTStrategy
+from .smart_money_orderflow import SmartMoneyOrderFlowStrategy
 
 __all__ = [
     'BaseStrategy', 'Signal',
     'MomentumStrategy', 'MeanReversionStrategy',
     'VolatilityStrategy', 'ScalpingStrategy',
-    'ICTStrategy',
+    'ICTStrategy', 'SmartMoneyOrderFlowStrategy',
 ]

@@ -4,12 +4,12 @@ Scalping / Low Volatility Strategy v1.1
 Rejim: LOW_VOLATILE
 
 v1.1 Değişiklikler:
-  - ✅ Graduated scoring (kalite bazlı skor)
-  - ✅ Kolon güvenliği eklendi
-  - ✅ entry_type set edildi
-  - ✅ Volume filtresi eklendi (çok düşük hacimde işlem yapma)
-  - ✅ NaN koruması eklendi
-  - ✅ Ek sinyal katmanları (daha fazla fırsat)
+  - [OK] Graduated scoring (kalite bazlı skor)
+  - [OK] Kolon güvenliği eklendi
+  - [OK] entry_type set edildi
+  - [OK] Volume filtresi eklendi (çok düşük hacimde işlem yapma)
+  - [OK] NaN koruması eklendi
+  - [OK] Ek sinyal katmanları (daha fazla fırsat)
 """
 
 import pandas as pd
@@ -21,8 +21,8 @@ class ScalpingStrategy(BaseStrategy):
 
     name = "scalping"
     regime = "low_volatile"
-    default_tp_mult = 1.0
-    default_sl_mult = 0.8
+    default_tp_mult = 1.8
+    default_sl_mult = 0.7
 
     def generate_signal(self, df: pd.DataFrame) -> Signal:
         if len(df) < 50:

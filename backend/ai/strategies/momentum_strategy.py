@@ -4,12 +4,12 @@ Momentum Strategy v1.1
 Rejim: TRENDING
 
 v1.1 Değişiklikler:
-  - ✅ SHORT sinyal eklendi (kritik bug fix)
-  - ✅ Pullback TP/SL look-ahead bias düzeltildi (.shift(1))
-  - ✅ Soft score yön-bağımlı hale getirildi
-  - ✅ Kolon güvenliği eklendi
-  - ✅ Hard filter SHORT breakout/pullback eklendi
-  - ✅ NaN koruması eklendi
+  - [OK] SHORT sinyal eklendi (kritik bug fix)
+  - [OK] Pullback TP/SL look-ahead bias düzeltildi (.shift(1))
+  - [OK] Soft score yön-bağımlı hale getirildi
+  - [OK] Kolon güvenliği eklendi
+  - [OK] Hard filter SHORT breakout/pullback eklendi
+  - [OK] NaN koruması eklendi
 """
 
 import pandas as pd
@@ -168,6 +168,26 @@ class MomentumStrategy(BaseStrategy):
                     not pd.isna(sl_raw) and sl_raw < c
                 ) else c - self.default_sl_mult * atr
 
+            else:  # breakout
+                # Swing-based TP, ATR-based SL
+                tp_raw = df['high'].shift(1).rolling(
+                    20, min_periods=5
+                ).max().iloc[-1]
+                tp_price = tp_raw if (
+                    not pd.isna(tp_raw) and tp_raw > c + atr
+                ) else c + self.default_tp_mult * atr
+
+                sl_price = c - self.default_sl_mult * atr
+                # Use prev candle low as SL if tighter
+                if prev['low'] < c and (c - prev['low']) > 0.5 * atr:
+                    sl_price = prev['low'] - 0.1 * atr
+
+            # Minimum TP/SL mesafe korumasi
+            if (tp_price - c) < 2 * atr:
+                tp_price = c + self.default_tp_mult * atr
+            if (c - sl_price) < 0.5 * atr:
+                sl_price = c - self.default_sl_mult * atr
+
             return self._long_signal(
                 soft_score=soft_score,
                 reason=f"LONG {entry_type} | Score={soft_score}/5 | "
@@ -201,6 +221,24 @@ class MomentumStrategy(BaseStrategy):
                 sl_price = sl_raw if (
                     not pd.isna(sl_raw) and sl_raw > c
                 ) else c + self.default_sl_mult * atr
+
+            else:  # breakout
+                tp_raw = df['low'].shift(1).rolling(
+                    20, min_periods=5
+                ).min().iloc[-1]
+                tp_price = tp_raw if (
+                    not pd.isna(tp_raw) and tp_raw < c - atr
+                ) else c - self.default_tp_mult * atr
+
+                sl_price = c + self.default_sl_mult * atr
+                if prev['high'] > c and (prev['high'] - c) > 0.5 * atr:
+                    sl_price = prev['high'] + 0.1 * atr
+
+            # Minimum TP/SL mesafe korumasi
+            if (c - tp_price) < 2 * atr:
+                tp_price = c - self.default_tp_mult * atr
+            if (sl_price - c) < 0.5 * atr:
+                sl_price = c + self.default_sl_mult * atr
 
             return self._short_signal(
                 soft_score=soft_score,

@@ -27,11 +27,11 @@ def verify():
         print(f"ATR Rank Tail: {[round(r, 3) for r in ranks]}")
         print(f"Unique ATR Rank values: {unique_ranks}")
         if unique_ranks > 1:
-            print("✅ ATR Rank is dynamic (fixed).")
+            print("[OK] ATR Rank is dynamic (fixed).")
         else:
-            print("❌ ATR Rank is still static.")
+            print("[FAIL] ATR Rank is still static.")
     else:
-        print("❌ ATR Rank column missing.")
+        print("[FAIL] ATR Rank column missing.")
 
     # 2. Verify Signal Generation
     # We want to see if any strategy produces a signal in the last 10 bars
@@ -40,11 +40,11 @@ def verify():
         test_df = df.iloc[:-i].copy()
         sig = generate_signal(test_df, symbol, '15m')
         if sig['signal'] != 'HOLD':
-            print(f"✅ SIG FOUND at bar -{i}: {sig['signal']} | {sig['reason']}")
+            print(f"[OK] SIG FOUND at bar -{i}: {sig['signal']} | {sig['reason']}")
             signals_found += 1
     
     if signals_found == 0:
-        print("ℹ️ No signals in last 10 bars (Market is neutral).")
+        print("ℹ[*] No signals in last 10 bars (Market is neutral).")
     else:
         print(f"Total signals in last 10 bars: {signals_found}")
 

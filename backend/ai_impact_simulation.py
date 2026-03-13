@@ -10,7 +10,7 @@ from backtest.data_fetcher import DataFetcher
 from backtest.signals import add_all_indicators, generate_signals
 
 def run_ai_impact_simulation(symbol="BTC/USDT", timeframe="1h", limit=3000):
-    print(f"📡 Start AI-Impact Simulation ({limit} candles)...")
+    print(f"[NET] Start AI-Impact Simulation ({limit} candles)...")
     fetcher = DataFetcher('binance')
     df = fetcher.fetch_ohlcv(symbol, timeframe, limit=limit)
     if df.empty: return
@@ -90,7 +90,7 @@ def run_ai_impact_simulation(symbol="BTC/USDT", timeframe="1h", limit=3000):
     total_pnl = sum(t['pnl_pct'] for t in trades)
     
     print("\n" + "="*40)
-    print(f"🚀 AI-FILTERED PROJECTION (3000 Candles)")
+    print(f"[START] AI-FILTERED PROJECTION (3000 Candles)")
     print(f"Total Trades: {len(df_t)} (Filtered)")
     print(f"Win Rate: {win_rate:.2f}% (AI Filter Improvement)")
     print(f"Final Balance: ${balance:.2f} (from ${initial_balance})")

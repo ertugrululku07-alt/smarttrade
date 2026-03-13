@@ -1,0 +1,12 @@
+{
+  "executionEnvironments": [
+    {
+      "root": ".",
+      "extraPaths": [".", "./", "..", "../backend"]
+    }
+  ],
+  "reportMissingImports": "warning",
+  "pythonVersion": "3.10",
+  "venvPath": ".",
+  "typeCheckingMode": "off"
+}
