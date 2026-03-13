@@ -51,8 +51,29 @@ def update_quant_settings(req: QuantSettingsRequest):
 
 @router.get("/v3/stats")
 def get_v3_stats():
-    """V3.1 Engine performans istatistiklerini (Win Rate, Avg RR) döndürür."""
-    return quant_trader.engine_v3.logger.get_stats()
+    """Engine performans istatistiklerini (Win Rate, Avg RR) döndürür."""
+    with quant_trader.trades_lock:
+        trades = list(quant_trader.closed_trades)
+
+    if not trades:
+        return {
+            "total_trades": 0, "win_rate": 0, "avg_rr": 0,
+            "total_pnl": 0, "wins": 0, "losses": 0,
+        }
+
+    wins = [t for t in trades if t.get('pnl', 0) > 0]
+    losses = [t for t in trades if t.get('pnl', 0) <= 0]
+    total_pnl = sum(t.get('pnl', 0) for t in trades)
+    avg_rr = (total_pnl / len(trades)) if trades else 0
+
+    return {
+        "total_trades": len(trades),
+        "wins": len(wins),
+        "losses": len(losses),
+        "win_rate": round(len(wins) / len(trades) * 100, 1) if trades else 0,
+        "avg_rr": round(avg_rr, 2),
+        "total_pnl": round(total_pnl, 2),
+    }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Standard Bot Placeholders (Frontend 404 Fix)

@@ -70,8 +70,9 @@ class AdaptiveEngine:
         if use_meta_filter:
             try:
                 from ai.meta_labelling.meta_predictor import MetaPredictor
+                meta_tfs = list(dict.fromkeys([primary_tf, secondary_tf, "4h"]))
                 self.meta_predictor = MetaPredictor(
-                    timeframes=[primary_tf, secondary_tf]
+                    timeframes=meta_tfs
                 )
                 if not self.meta_predictor.is_ready:
                     print("  WARNING: Meta-model bulunamadi, filtresiz calisilacak")

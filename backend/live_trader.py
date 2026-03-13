@@ -606,10 +606,10 @@ class LivePaperTrader:
             "tp_price": tp_price,
             "sl_price": sl_price,
             "atr": atr,
-            "strategy": sig.get('type', 'ICT_Hybrid'),
+            "strategy": sig.get('strategy', 'unknown'),
             "regime": sig.get('regime', 'unknown'),
-            "entry_type": sig.get('type', 'none'),
-            "soft_score": sig.get('score', 0),
+            "entry_type": sig.get('entry_type', 'none'),
+            "soft_score": sig.get('soft_score', 0),
             "signal_result": signal_result,
             "logger_id": logger_id or (
                 f"{symbol}_{side}_{datetime.now().strftime('%Y%m%d%H%M%S')}"

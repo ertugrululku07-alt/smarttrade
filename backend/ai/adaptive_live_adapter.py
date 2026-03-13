@@ -235,12 +235,27 @@ def print_debug():
 # ═══════════════════════════════════════════════════════════════════
 
 def should_open_position(signal_result: Dict, min_confidence: float = 0.60) -> bool:
-    """Pozisyon açılmalı mı? v1.5 Alpha: threshold 0.60 (Yüksek Hassasiyet)"""
-    return (
-        signal_result['signal'] in ('LONG', 'SHORT')
-        and signal_result['confidence'] >= min_confidence
-        and signal_result['position_size'] > 0
-    )
+    """
+    Pozisyon açılmalı mı? v2.0 Quality Gate
+
+    Kontroller:
+      1. Sinyal yönü LONG veya SHORT
+      2. Confidence ≥ min_confidence (default 0.60)
+      3. Position size > 0
+      4. Soft score ≥ 3 (MTF + strateji kalitesi)
+      5. Meta confidence > 0 (meta model çalışıyor)
+    """
+    if signal_result['signal'] not in ('LONG', 'SHORT'):
+        return False
+    if signal_result['confidence'] < min_confidence:
+        return False
+    if signal_result['position_size'] <= 0:
+        return False
+    if signal_result.get('soft_score', 0) < 3:
+        return False
+    if signal_result.get('meta_confidence', 0) <= 0:
+        return False
+    return True
 
 
 def get_tp_sl_prices(
