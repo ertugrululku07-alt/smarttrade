@@ -13,4 +13,4 @@ ai/models/eski/
 .vscode/
 .idea/
 *.joblib
-!ai/models/*.joblib
+!ai/models/**/*.joblib
