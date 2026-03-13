@@ -76,6 +76,182 @@ def get_v3_stats():
     }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Diagnostic / Health Endpoints
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/quant/health")
+def get_health():
+    """
+    Sistem sağlık kontrolü — model, strateji, pipeline durumu.
+    Hangi modeller yüklü, hangi stratejiler aktif, pass rate ne?
+    """
+    from ai.adaptive_live_adapter import _get_engine
+    engine = _get_engine()
+    return engine.get_health_check()
+
+
+@router.get("/quant/diagnose/{symbol}")
+def diagnose_symbol(symbol: str):
+    """
+    Belirli bir sembol için tüm karar pipeline'ını adım adım trace eder.
+
+    7 Adım:
+      1. Rejim Tespiti (1h)
+      2. Strateji Sinyali (primary → secondary fallback)
+      3. MTF Filtre (4h trend yönü)
+      4. Entry Timing (15m RSI/momentum/mum)
+      5. Meta Filter (XGBoost model)
+      6. Final Decision (confidence, size)
+      7. Quality Gate (soft_score≥3, meta>0)
+
+    Kullanım: GET /live/quant/diagnose/BTCUSDT
+    """
+    import traceback
+    try:
+        from backtest.data_fetcher import DataFetcher
+        from backtest.signals import add_all_indicators, add_meta_context_features
+        from ai.xgboost_trainer import generate_features
+        from ai.adaptive_live_adapter import _get_engine, _ensure_features
+
+        fetcher = DataFetcher('binance')
+
+        # Format symbol
+        sym = symbol.upper()
+        if '/' not in sym and sym.endswith('USDT'):
+            sym_ccxt = sym[:-4] + '/USDT'
+        elif '/' not in sym:
+            sym_ccxt = sym + '/USDT'
+        else:
+            sym_ccxt = sym
+
+        # Fetch data for all timeframes
+        data_status = {}
+
+        df_1h = fetcher.fetch_ohlcv(sym_ccxt, '1h', limit=100)
+        if df_1h is None or df_1h.empty or len(df_1h) < 50:
+            return {"error": f"1h veri yetersiz ({len(df_1h) if df_1h is not None else 0} bars)", "symbol": sym}
+        df_1h = add_all_indicators(df_1h)
+        df_1h = generate_features(df_1h)
+        df_1h = _ensure_features(df_1h, sym)
+        data_status["1h"] = f"{len(df_1h)} bars ✅"
+
+        df_15m = fetcher.fetch_ohlcv(sym_ccxt, '15m', limit=100)
+        if df_15m is not None and not df_15m.empty and len(df_15m) >= 20:
+            df_15m = add_all_indicators(df_15m)
+            data_status["15m"] = f"{len(df_15m)} bars ✅"
+        else:
+            df_15m = None
+            data_status["15m"] = "yetersiz ⚠️"
+
+        df_4h = fetcher.fetch_ohlcv(sym_ccxt, '4h', limit=100)
+        if df_4h is not None and not df_4h.empty and len(df_4h) >= 30:
+            df_4h = add_all_indicators(df_4h)
+            data_status["4h"] = f"{len(df_4h)} bars ✅"
+        else:
+            df_4h = None
+            data_status["4h"] = "yetersiz ⚠️"
+
+        # Run diagnostic
+        engine = _get_engine()
+        trace = engine.diagnose(
+            df=df_1h,
+            df_secondary=df_15m,
+            df_4h=df_4h,
+            symbol=sym,
+        )
+        trace["data_fetch"] = data_status
+        return trace
+
+    except Exception as e:
+        return {
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+            "symbol": symbol,
+        }
+
+
+@router.get("/quant/features/{symbol}")
+def get_features(symbol: str):
+    """
+    Meta model'e giren 43 feature'ın tam değerlerini döndürür.
+    Eğitim vs production karşılaştırması için kullanılır.
+    """
+    import traceback
+    try:
+        from backtest.data_fetcher import DataFetcher
+        from backtest.signals import add_all_indicators
+        from ai.xgboost_trainer import generate_features
+        from ai.adaptive_live_adapter import _get_engine, _ensure_features
+
+        fetcher = DataFetcher('binance')
+        sym = symbol.upper()
+        if '/' not in sym and sym.endswith('USDT'):
+            sym_ccxt = sym[:-4] + '/USDT'
+        elif '/' not in sym:
+            sym_ccxt = sym + '/USDT'
+        else:
+            sym_ccxt = sym
+
+        df_1h = fetcher.fetch_ohlcv(sym_ccxt, '1h', limit=100)
+        if df_1h is None or df_1h.empty or len(df_1h) < 50:
+            return {"error": "1h veri yetersiz"}
+        df_1h = add_all_indicators(df_1h)
+        df_1h = generate_features(df_1h)
+        df_1h = _ensure_features(df_1h, sym)
+
+        df_4h = fetcher.fetch_ohlcv(sym_ccxt, '4h', limit=100)
+        if df_4h is not None and not df_4h.empty and len(df_4h) >= 30:
+            df_4h = add_all_indicators(df_4h)
+        else:
+            df_4h = None
+
+        engine = _get_engine()
+        engine._inject_htf_features(df_1h, df_4h)
+
+        # Run predict with debug to get feature values
+        from ai.regime_detector import detect_regime
+        regime, _ = detect_regime(df_1h)
+
+        engine.meta_predictor.predict(
+            df=df_1h, regime=regime, signal_direction="LONG",
+            signal_confidence=0.8, timeframe="1h", debug=True,
+        )
+
+        debug = engine.meta_predictor.last_debug
+        if not debug:
+            return {"error": "debug info not available"}
+
+        # Sort features by category
+        feature_vals = debug.get("feature_values", {})
+        categorized = {"signal": {}, "htf": {}, "context": {}, "technical": {}}
+        for fname, info in feature_vals.items():
+            val = info["value"]
+            src = info["source"]
+            if src == "signal" or fname.startswith("signal_") or fname.startswith("regime_"):
+                categorized["signal"][fname] = val
+            elif fname.startswith("htf_"):
+                categorized["htf"][fname] = val
+            elif fname in ("close_pct_change", "vol_sma_ratio", "di_diff", "vol_ratio_20"):
+                categorized["technical"][fname] = val
+            else:
+                categorized["context"][fname] = val
+
+        return {
+            "symbol": sym,
+            "regime": regime.value,
+            "model_key": debug.get("model_key"),
+            "total_features": debug.get("total_features"),
+            "ok_nonzero": debug.get("ok_nonzero"),
+            "missing": debug.get("missing_from_df"),
+            "zero_count": debug.get("zero_or_nan"),
+            "features_by_category": categorized,
+        }
+
+    except Exception as e:
+        return {"error": str(e), "traceback": traceback.format_exc()}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Standard Bot Placeholders (Frontend 404 Fix)
 # ─────────────────────────────────────────────────────────────────────────────
 

@@ -37,6 +37,7 @@ class MetaPredictor:
             timeframes = ["15m", "1h", "4h"]
         self.timeframes = timeframes
         self.models: Dict[str, Dict] = {}
+        self.last_debug: Optional[Dict] = None
         self._load_models()
 
     def _load_models(self):
@@ -84,10 +85,13 @@ class MetaPredictor:
                     key = f"{regime.value}_{tf}"
                     threshold = 0.60
                     if isinstance(meta, dict):
-                        # Support both 'best_threshold' and nested metrics
-                        threshold = max(0.55, meta.get('best_threshold', 0.60))
+                        # best_threshold from training maximizes WR but can be too strict
+                        # for live trading (e.g. AUC=0.66 models can't output 0.78+).
+                        # Cap at MAX_LIVE_THRESHOLD to maintain reasonable pass rate.
+                        MAX_LIVE_THRESHOLD = 0.65
+                        raw_thr = meta.get('best_threshold', 0.60)
+                        threshold = max(0.55, min(raw_thr, MAX_LIVE_THRESHOLD))
                         if 'metrics' in meta and isinstance(meta['metrics'], dict):
-                            # v1.2 trainer stores metrics inside model_data
                             pass
 
                     self.models[key] = {
@@ -142,15 +146,18 @@ class MetaPredictor:
         regime: Regime,
         signal_direction: str,
         signal_confidence: float,
-        timeframe: str = "1h"
+        timeframe: str = "1h",
+        debug: bool = False,
     ) -> Tuple[float, bool, float, str]:
         """
         Meta-model prediction with timeframe awareness.
 
         Returns: (meta_confidence, should_trade, threshold, reason)
+        When debug=True, self.last_debug is populated with feature diagnostics.
         """
         regime_val = regime.value if isinstance(regime, Regime) else str(regime)
         key = f"{regime_val}_{timeframe}"
+        self.last_debug = None  # reset
 
         # TF fallback: 1h yoksa 4h, 4h yoksa 1h dene
         if key not in self.models:
@@ -189,40 +196,77 @@ class MetaPredictor:
             # Build feature vector in model's expected order
             row_data = {}
             missing_features = []
+            zero_features = []
+            ok_features = []
+            feature_details = {}
 
             for col in feature_cols:
                 if col in meta_values:
                     row_data[col] = meta_values[col]
+                    feature_details[col] = {"value": meta_values[col], "source": "signal"}
                 elif col in last_row.index:
                     val = last_row[col]
                     if pd.isna(val) or np.isinf(val):
                         row_data[col] = 0.0
+                        zero_features.append(col)
+                        feature_details[col] = {"value": 0.0, "source": "nan_replaced"}
                     else:
                         row_data[col] = float(val)
+                        if float(val) == 0.0:
+                            zero_features.append(col)
+                        else:
+                            ok_features.append(col)
+                        feature_details[col] = {"value": round(float(val), 4), "source": "df"}
                 else:
                     row_data[col] = 0.0
                     missing_features.append(col)
+                    feature_details[col] = {"value": 0.0, "source": "MISSING"}
 
-            if missing_features and len(missing_features) > len(feature_cols) * 0.5:
-                # Too many features missing - model prediction unreliable
+            # Debug output
+            n_total = len(feature_cols)
+            n_missing = len(missing_features)
+            n_zero = len(zero_features)
+            n_ok = len(ok_features)
+            n_signal = len([c for c in feature_cols if c in meta_values])
+
+            debug_info = {
+                "model_key": key,
+                "total_features": n_total,
+                "ok_nonzero": n_ok,
+                "signal_features": n_signal,
+                "zero_or_nan": n_zero,
+                "missing_from_df": n_missing,
+                "missing_list": missing_features[:20],
+                "zero_list": zero_features[:20],
+                "feature_values": {k: v for k, v in feature_details.items()},
+            }
+            self.last_debug = debug_info
+
+            # Console log (always)
+            print(f"\n  [META DEBUG] {key} | OK:{n_ok} Signal:{n_signal} Zero:{n_zero} Missing:{n_missing}/{n_total}")
+            if missing_features:
+                print(f"    MISSING: {missing_features[:10]}")
+            if zero_features:
+                print(f"    ZERO: {zero_features[:10]}")
+
+            if n_missing > n_total * 0.5:
                 fallback_conf = signal_confidence * 0.75
                 return (
                     fallback_conf, fallback_conf > 0.55, 0.55,
-                    f"Too many features missing ({len(missing_features)}/{len(feature_cols)})"
+                    f"Too many features missing ({n_missing}/{n_total})"
                 )
 
             # Build DataFrame with correct column order
             X = pd.DataFrame([row_data], columns=feature_cols)
             X = X.astype(np.float32)
-
-            # Replace any remaining NaN/Inf
             X = X.replace([np.inf, -np.inf], 0.0).fillna(0.0)
 
             # Prediction
             proba = model.predict_proba(X)[0]
             meta_conf = float(proba[1]) if len(proba) >= 2 else float(proba[0])
-
             should_trade = meta_conf >= threshold
+
+            print(f"    → Prediction: {meta_conf:.4f} (thr={threshold:.2f}) {'✅ PASS' if should_trade else '❌ REJECT'}")
 
             return meta_conf, should_trade, threshold, "OK"
 

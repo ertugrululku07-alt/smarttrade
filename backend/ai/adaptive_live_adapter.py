@@ -234,16 +234,15 @@ def print_debug():
 # Mevcut bot entegrasyon yardımcıları
 # ═══════════════════════════════════════════════════════════════════
 
-def should_open_position(signal_result: Dict, min_confidence: float = 0.60) -> bool:
+def should_open_position(signal_result: Dict, min_confidence: float = 0.40) -> bool:
     """
-    Pozisyon açılmalı mı? v2.0 Quality Gate
+    Pozisyon açılmalı mı? v2.1 Quality Gate (Soft-Scaling)
 
     Kontroller:
       1. Sinyal yönü LONG veya SHORT
-      2. Confidence ≥ min_confidence (default 0.60)
-      3. Position size > 0
+      2. Confidence ≥ min_confidence (default 0.40 — soft-scaling ile uyumlu)
+      3. Position size > 0 (meta_conf < 0.15 ise 0 olur)
       4. Soft score ≥ 3 (MTF + strateji kalitesi)
-      5. Meta confidence > 0 (meta model çalışıyor)
     """
     if signal_result['signal'] not in ('LONG', 'SHORT'):
         return False
@@ -252,8 +251,6 @@ def should_open_position(signal_result: Dict, min_confidence: float = 0.60) -> b
     if signal_result['position_size'] <= 0:
         return False
     if signal_result.get('soft_score', 0) < 3:
-        return False
-    if signal_result.get('meta_confidence', 0) <= 0:
         return False
     return True
 
