@@ -159,15 +159,15 @@ class MTFAnalyzer:
             if bias == TrendBias.STRONG_BULL: return MTFSignalAdjustment(2, 1.0, 1.3, True, f"4h Strong Bull (str={strength:.2f})")
             if bias == TrendBias.BULL: return MTFSignalAdjustment(1, 1.0, 1.15, True, f"4h Bull (str={strength:.2f})")
             if bias == TrendBias.NEUTRAL: return MTFSignalAdjustment(0, 1.0, 1.0, True, "4h Neutral")
-            if bias == TrendBias.BEAR: return MTFSignalAdjustment(-1, 0.8, 0.85, True, f"4h Bear conflict (str={strength:.2f})")
-            return MTFSignalAdjustment(-2, 0.7, 0.7, strength < 0.7, f"4h Strong Bear -> LONG {'REJECTED' if strength >= 0.7 else 'penalized'}")
+            if bias == TrendBias.BEAR: return MTFSignalAdjustment(-2, 0.7, 0.7, False, f"4h Bear -> LONG REJECTED (str={strength:.2f})")
+            return MTFSignalAdjustment(-2, 0.7, 0.7, False, f"4h Strong Bear -> LONG REJECTED (str={strength:.2f})")
         
         elif direction == 'SHORT':
             if bias == TrendBias.STRONG_BEAR: return MTFSignalAdjustment(2, 1.0, 1.3, True, f"4h Strong Bear (str={strength:.2f})")
             if bias == TrendBias.BEAR: return MTFSignalAdjustment(1, 1.0, 1.15, True, f"4h Bear (str={strength:.2f})")
             if bias == TrendBias.NEUTRAL: return MTFSignalAdjustment(0, 1.0, 1.0, True, "4h Neutral")
-            if bias == TrendBias.BULL: return MTFSignalAdjustment(-1, 0.8, 0.85, True, f"4h Bull conflict (str={strength:.2f})")
-            return MTFSignalAdjustment(-2, 0.7, 0.7, strength < 0.7, f"4h Strong Bull -> SHORT {'REJECTED' if strength >= 0.7 else 'penalized'}")
+            if bias == TrendBias.BULL: return MTFSignalAdjustment(-2, 0.7, 0.7, False, f"4h Bull -> SHORT REJECTED (str={strength:.2f})")
+            return MTFSignalAdjustment(-2, 0.7, 0.7, False, f"4h Strong Bull -> SHORT REJECTED (str={strength:.2f})")
 
         return MTFSignalAdjustment(0, 1.0, 1.0, True, f"Unknown direction: {direction}")
 
@@ -320,10 +320,10 @@ class MTFAnalyzer:
         if structure == 'HH_HL': bull += 1
         elif structure == 'LH_LL': bear += 1
 
-        if bull >= 3.5: return TrendBias.STRONG_BULL
-        if bull >= 2.5: return TrendBias.BULL
-        if bear >= 3.5: return TrendBias.STRONG_BEAR
-        if bear >= 2.5: return TrendBias.BEAR
+        if bull >= 3.0: return TrendBias.STRONG_BULL
+        if bull >= 2.0: return TrendBias.BULL
+        if bear >= 3.0: return TrendBias.STRONG_BEAR
+        if bear >= 2.0: return TrendBias.BEAR
         return TrendBias.NEUTRAL
 
     def _bias_to_filter(self, bias: TrendBias) -> TradeFilter:

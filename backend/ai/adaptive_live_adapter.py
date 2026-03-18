@@ -9,6 +9,7 @@ v1.1: Feature hazırlama eklendi
 
 import os
 import sys
+import threading
 import traceback
 import pandas as pd
 import numpy as np
@@ -21,7 +22,8 @@ from ai.adaptive_engine import AdaptiveEngine, TradeDecision
 # Engine cache
 _engines: Dict[str, AdaptiveEngine] = {}
 
-# Sinyal sayacı (debug)
+# Sinyal sayacı (debug) — thread-safe
+_signal_stats_lock = threading.Lock()
 _signal_stats = {
     'total_calls': 0,
     'feature_added': 0,
@@ -58,7 +60,8 @@ def _ensure_features(df: pd.DataFrame, symbol: str = "") -> pd.DataFrame:
         try:
             from backtest.signals import add_all_indicators
             df = add_all_indicators(df)
-            _signal_stats['feature_added'] += 1
+            with _signal_stats_lock:
+                _signal_stats['feature_added'] += 1
         except Exception as e:
             print(f"  ERROR: Indicator hesaplama hatasi ({symbol}): {e}")
             return df
@@ -104,12 +107,14 @@ def generate_signal(
     Mevcut bot ile uyumlu sinyal üretici.
     Hybrid Mod v1.5: 1H primary ve Opsiyonel 15m secondary destekler.
     """
-    _signal_stats['total_calls'] += 1
+    with _signal_stats_lock:
+        _signal_stats['total_calls'] += 1
     
     try:
         # ── v1.1: Feature kontrolü ve hazırlama ─────────────
         if len(df) < 50:
-            _signal_stats['holds'] += 1
+            with _signal_stats_lock:
+                _signal_stats['holds'] += 1
             return _hold_response(f"Yetersiz veri: {len(df)} bar < 50")
         
         df = _ensure_features(df, symbol)
@@ -118,7 +123,8 @@ def generate_signal(
         critical_cols = ['close', 'high', 'low', 'open', 'volume']
         missing = [c for c in critical_cols if c not in df.columns]
         if missing:
-            _signal_stats['errors'] += 1
+            with _signal_stats_lock:
+                _signal_stats['errors'] += 1
             return _hold_response(f"Eksik kolonlar: {missing}")
         
         # ── Engine'e gönder (Hybrid) ──────────────────────────
@@ -126,7 +132,8 @@ def generate_signal(
         decision = engine.decide(df, df_secondary=df_secondary, df_4h=df_4h, symbol=symbol)
         
         if decision.action in ('LONG', 'SHORT'):
-            _signal_stats['signals_generated'] += 1
+            with _signal_stats_lock:
+                _signal_stats['signals_generated'] += 1
             
             # Debug log
             print(f"  TARGET: [{symbol}] {decision.action} | "
@@ -136,7 +143,8 @@ def generate_signal(
                   f"size={decision.position_size:.0%} | "
                   f"{decision.reason}")
         else:
-            _signal_stats['holds'] += 1
+            with _signal_stats_lock:
+                _signal_stats['holds'] += 1
         
         return {
             'signal': decision.action,
@@ -156,7 +164,8 @@ def generate_signal(
         }
 
     except Exception as e:
-        _signal_stats['errors'] += 1
+        with _signal_stats_lock:
+            _signal_stats['errors'] += 1
         error_detail = traceback.format_exc()
         # print(f"ERROR: Adaptive signal error ({symbol}): {e}\n{error_detail}")
         return _hold_decision_with_error(f"Signal Generation Error: {str(e)}")
@@ -179,6 +188,10 @@ def _hold_response(reason: str = "") -> Dict:
         'strategy': 'none',
         'meta_confidence': 0.0,
         'reason': reason,
+        'soft_score': 0,
+        'entry_type': 'none',
+        'tp_price': 0.0,
+        'sl_price': 0.0,
     }
 
 
@@ -233,6 +246,30 @@ def print_debug():
 # ═══════════════════════════════════════════════════════════════════
 # Mevcut bot entegrasyon yardımcıları
 # ═══════════════════════════════════════════════════════════════════
+
+def has_1h_signal(
+    df: pd.DataFrame,
+    symbol: str = "UNKNOWN",
+    timeframe: str = "1h",
+    secondary_tf: str = "15m",
+) -> bool:
+    """
+    Lightweight pre-filter: 1h verisinde herhangi bir strateji sinyal üretiyor mu?
+    Meta model, MTF filter, entry timing ÇALIŞMAZ — sadece regime + strategy check.
+    Amaç: Sinyal olmayan semboller için 15m/4h API çağrısını atlamak.
+    """
+    try:
+        if len(df) < 50:
+            return False
+        df = _ensure_features(df, symbol)
+        from ai.regime_detector import detect_regime
+        regime, _ = detect_regime(df)
+        engine = _get_engine(timeframe, secondary_tf)
+        signal = engine._best_signal_ensemble(df, regime)
+        return signal.is_valid
+    except Exception:
+        return False
+
 
 def should_open_position(signal_result: Dict, min_confidence: float = 0.40) -> bool:
     """

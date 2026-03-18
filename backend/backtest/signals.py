@@ -664,6 +664,85 @@ def add_meta_context_features(df: pd.DataFrame) -> pd.DataFrame:
     df['trend_x_clean'] = _td_norm * df['move_cleanliness'].fillna(0)
 
     # ═══════════════════════════════════════════════
+    # 12. MEAN REVERSION FEATURES (v3.0)
+    # ═══════════════════════════════════════════════
+
+    # BB squeeze: düşük BB width = sıkışma, patlama öncesi
+    if 'bb_upper' in df.columns and 'bb_lower' in df.columns:
+        bb_width = (df['bb_upper'] - df['bb_lower']) / close.replace(0, np.nan)
+        bb_width_ma = bb_width.rolling(50, min_periods=10).mean()
+        df['bb_squeeze'] = bb_width / bb_width_ma.replace(0, np.nan)
+    else:
+        df['bb_squeeze'] = 1.0
+
+    # BB position z-score: ne kadar extreme?
+    if 'bb_upper' in df.columns and 'bb_lower' in df.columns:
+        bb_mid = (df['bb_upper'] + df['bb_lower']) / 2
+        bb_half = (df['bb_upper'] - df['bb_lower']) / 2
+        df['bb_position_z'] = (close - bb_mid) / bb_half.replace(0, np.nan)
+    else:
+        df['bb_position_z'] = 0.0
+
+    # RSI slope: son 5 bar RSI eğimi (reversal timing)
+    if 'rsi' in df.columns:
+        df['rsi_slope_5'] = (df['rsi'] - df['rsi'].shift(5)) / 5
+    else:
+        df['rsi_slope_5'] = 0.0
+
+    # RSI divergence derinliği
+    if 'rsi' in df.columns:
+        price_chg_10 = close.pct_change(10)
+        rsi_chg_10 = df['rsi'] - df['rsi'].shift(10)
+        df['rsi_divergence_depth'] = (
+            np.sign(price_chg_10) * (-rsi_chg_10 / 100)
+        ).fillna(0).clip(-1, 1)
+    else:
+        df['rsi_divergence_depth'] = 0.0
+
+    # Support/Resistance proximity (ATR normalize)
+    swing_high_20 = high.rolling(20, min_periods=5).max()
+    swing_low_20 = low.rolling(20, min_periods=5).min()
+    dist_to_res = (swing_high_20 - close) / atr_ref.replace(0, np.nan)
+    dist_to_sup = (close - swing_low_20) / atr_ref.replace(0, np.nan)
+    df['sr_proximity'] = pd.concat([dist_to_res, dist_to_sup], axis=1).min(axis=1)
+
+    # Swing range: son 20 bar range / fiyat
+    df['swing_range_pct'] = (swing_high_20 - swing_low_20) / close.replace(0, np.nan) * 100
+
+    # Mean reversion composite: BB extreme + RSI extreme + diverjans
+    _bb_extreme = df['bb_position_z'].abs().clip(0, 2)
+    _rsi_extreme = 0.0
+    if 'rsi' in df.columns:
+        _rsi_extreme = ((df['rsi'] - 50).abs() / 50).clip(0, 1)
+    _div_signal = df['rsi_divergence_depth'].abs()
+    df['mean_reversion_score'] = (_bb_extreme + _rsi_extreme + _div_signal) / 3
+
+    # ═══════════════════════════════════════════════
+    # 13. VOLATILITY REGIME FEATURES (v3.0)
+    # ═══════════════════════════════════════════════
+
+    # Volatilite genişleme hızı
+    atr_chg_5 = atr_ref.pct_change(5)
+    df['vol_expansion_rate'] = atr_chg_5.clip(-2, 2).fillna(0)
+
+    # Vol contraction: sıkışma tespit
+    atr_pctile = atr_ref.rolling(50, min_periods=10).rank(pct=True)
+    df['vol_contraction'] = (1 - atr_pctile).fillna(0.5)
+
+    # High vol sürekliliği (bar sayısı)
+    _high_vol = (atr_ref > atr_ref.rolling(20, min_periods=5).mean()).astype(int)
+    _hv_groups = (_high_vol != _high_vol.shift()).cumsum()
+    df['high_vol_persistence'] = _high_vol.groupby(_hv_groups).cumcount() + 1
+
+    # Regime transition: vol_regime_ratio'nun değişim hızı
+    df['regime_transition_signal'] = df['vol_regime_ratio'].pct_change(3).clip(-2, 2).fillna(0)
+
+    # Price acceleration (2. türev — inflection point detection)
+    mom_5 = close.pct_change(5)
+    mom_5_prev = mom_5.shift(5)
+    df['price_acceleration'] = (mom_5 - mom_5_prev).clip(-0.1, 0.1).fillna(0)
+
+    # ═══════════════════════════════════════════════
     # CLEANUP — inf temizliği
     # ═══════════════════════════════════════════════
 

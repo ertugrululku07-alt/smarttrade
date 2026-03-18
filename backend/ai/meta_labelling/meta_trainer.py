@@ -1,16 +1,16 @@
 """
-Meta-Label Trainer v2.0 (Context-Aware)
+Meta-Label Trainer v3.0 (LightGBM)
 
-KRİTİK DEĞİŞİKLİK:
-  v1.3: RSI, MACD, BB, Stoch → sinyal üret → AYNI feature'ları meta-model'e ver
-  v2.0: RSI, MACD, BB, Stoch → sinyal üret → CONTEXT feature'ları meta-model'e ver
+v3.0 Changes:
+  - XGBoost → LightGBM (4x faster predict, better on noisy financial data)
+  - Leaf-wise tree growth (daha iyi pattern yakalama)
+  - Incremental learning desteği (init_model)
+  - Optuna parametreleri LightGBM'e optimize edildi
 
-  Döngüsel bilgi sorunu çözüldü.
-
-v2.0 Improvements:
+v2.0 preserved:
   - Context-aware feature architecture (circular dependency çözümü)
-  - v1.3 fixes preserved (no double balancing, degenerate penalty)
-  - 4h HTF data integration in CLI
+  - No double balancing, degenerate penalty
+  - 4h HTF data integration
   - Quality verdict system (GOOD/OK/WEAK)
   - Feature category breakdown (CTX/SIG/HTF/TCH)
   - WR improvement tracking
@@ -26,7 +26,7 @@ import traceback
 import joblib
 import numpy as np
 import pandas as pd
-import xgboost as xgb
+import lightgbm as lgb
 
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
@@ -52,7 +52,7 @@ except ImportError:
 # Sabitler
 # ══════════════════════════════════════════════════════════════
 
-VERSION = "2.0"
+VERSION = "3.0"
 
 REGIME_VALUES = [
     'trending',
@@ -60,6 +60,15 @@ REGIME_VALUES = [
     'high_volatile',
     'low_volatile',
 ]
+
+# v3.0: Regime birleştirme — küçük rejimleri büyütmek için
+# 4 regime → 2 merged regime (daha fazla sample/model)
+REGIME_MERGE_MAP = {
+    'trending':      'directional',
+    'mean_reverting': 'directional',
+    'high_volatile': 'volatile',
+    'low_volatile':  'volatile',
+}
 
 # ─────────────────────────────────────────────────────────────
 # FEATURE MİMARİSİ v2.0
@@ -101,6 +110,13 @@ CONTEXT_FEATURES = [
     'bar_range_vs_atr', 'spread_estimate',
     # İnteraksiyon
     'vol_x_volatility', 'trend_x_clean',
+    # ── v3.0: Mean Reversion features ──
+    'bb_squeeze', 'bb_position_z', 'rsi_slope_5',
+    'rsi_divergence_depth', 'sr_proximity', 'swing_range_pct',
+    'mean_reversion_score',
+    # ── v3.0: Volatility Regime features ──
+    'vol_expansion_rate', 'vol_contraction', 'high_vol_persistence',
+    'regime_transition_signal', 'price_acceleration',
 ]
 
 # Grup 3: HTF (multi-timeframe)
@@ -116,6 +132,14 @@ MINIMAL_TECHNICAL = [
     'hurst',        # Fraktal yapı
     'vol_ratio_20', # Volume relatif
 ]
+
+# Grup 5: ICT/SMC features (ict_core.analyze → ict_features.extract)
+try:
+    from ai.ict_features import ICT_FEATURES as _ICT_FEATURES_LIST
+except ImportError:
+    _ICT_FEATURES_LIST = []
+
+ICT_FEATURES_GROUP = list(_ICT_FEATURES_LIST)  # ~27 feature
 
 # Feature'lardan düşürülecekler
 DROP_FEATURES = [
@@ -150,7 +174,7 @@ MIN_SAMPLES_AFTER_SPLIT = 30
 
 class MetaTrainer:
     """
-    Her regime için ayrı XGBoost meta-model eğitir.
+    Her regime için ayrı LightGBM meta-model eğitir.
 
     Eğitim Pipeline:
       1. Feature listesi oluştur (mevcut kolonlardan)
@@ -246,6 +270,35 @@ class MetaTrainer:
 
             gc.collect()
 
+        # ── v3.0: Merged regime eğitimi ──
+        print(f"\n  {'='*60}")
+        print(f"  MERGED REGIME EĞİTİMİ (v3.0)")
+        print(f"  {'='*60}")
+
+        meta_df_copy = meta_df.copy()
+        meta_df_copy['_merged_regime'] = meta_df_copy[regime_col].map(
+            REGIME_MERGE_MAP
+        )
+
+        for merged_val in ['directional', 'volatile']:
+            merged_df = meta_df_copy[
+                meta_df_copy['_merged_regime'] == merged_val
+            ].copy()
+
+            if len(merged_df) < MIN_SAMPLES_PER_REGIME:
+                print(f"\n  [SKIP] {merged_val}: Yetersiz veri ({len(merged_df)})")
+                continue
+
+            result = self._train_single_regime(
+                regime_df=merged_df,
+                regime_val=merged_val,
+                timeframe=timeframe,
+                version=version,
+            )
+
+            results[merged_val] = result
+            gc.collect()
+
         # Özet
         elapsed = time.time() - start_time
         self._print_summary(results, elapsed)
@@ -287,9 +340,10 @@ class MetaTrainer:
             n_ctx = sum(1 for f in features if f in CONTEXT_FEATURES)
             n_htf = sum(1 for f in features if f.startswith('htf_'))
             n_tech = sum(1 for f in features if f in MINIMAL_TECHNICAL)
+            n_ict = sum(1 for f in features if f.startswith('ict_'))
 
             print(f"  Features: {len(features)} "
-                  f"(sig={n_sig} ctx={n_ctx} htf={n_htf} tech={n_tech})")
+                  f"(sig={n_sig} ctx={n_ctx} htf={n_htf} tech={n_tech} ict={n_ict})")
 
             # Döngüsel feature uyarısı
             circular_found = [f for f in features if f in EXCLUDED_CIRCULAR]
@@ -439,6 +493,12 @@ class MetaTrainer:
             if (f in available
                     and f not in seen
                     and f not in DROP_FEATURES):
+                features.append(f)
+                seen.add(f)
+
+        # 5. ICT/SMC features (v2.0 — ict_core primitives)
+        for f in ICT_FEATURES_GROUP:
+            if f in available and f not in seen:
                 features.append(f)
                 seen.add(f)
 
@@ -601,9 +661,10 @@ class MetaTrainer:
         def objective(trial):
             params = {
                 'n_estimators': trial.suggest_int(
-                    'n_estimators', 100, 500
+                    'n_estimators', 100, 600
                 ),
-                'max_depth': trial.suggest_int('max_depth', 3, 7),
+                'num_leaves': trial.suggest_int('num_leaves', 15, 63),
+                'max_depth': trial.suggest_int('max_depth', 3, 8),
                 'learning_rate': trial.suggest_float(
                     'learning_rate', 0.01, 0.1, log=True
                 ),
@@ -613,10 +674,9 @@ class MetaTrainer:
                 'colsample_bytree': trial.suggest_float(
                     'colsample_bytree', 0.5, 0.95
                 ),
-                'min_child_weight': trial.suggest_int(
-                    'min_child_weight', 1, 15
+                'min_child_samples': trial.suggest_int(
+                    'min_child_samples', 5, 50
                 ),
-                'gamma': trial.suggest_float('gamma', 0.0, 1.5),
                 'reg_alpha': trial.suggest_float(
                     'reg_alpha', 1e-5, 5.0, log=True
                 ),
@@ -624,20 +684,20 @@ class MetaTrainer:
                     'reg_lambda', 1e-5, 5.0, log=True
                 ),
                 'scale_pos_weight': scale_pos_weight,
-                'eval_metric': 'logloss',
                 'random_state': 42,
-                'tree_method': 'hist',
                 'n_jobs': -1,
+                'verbosity': -1,
             }
 
-            model = xgb.XGBClassifier(
-                **params,
-                early_stopping_rounds=20,
-            )
+            model = lgb.LGBMClassifier(**params)
             model.fit(
                 X_train, y_train,
                 eval_set=[(X_val, y_val)],
-                verbose=False,
+                eval_metric='logloss',
+                callbacks=[
+                    lgb.early_stopping(20, verbose=False),
+                    lgb.log_evaluation(period=0),
+                ],
             )
 
             preds = model.predict(X_val)
@@ -680,31 +740,29 @@ class MetaTrainer:
         best = study.best_params
         best.update({
             'scale_pos_weight': scale_pos_weight,
-            'eval_metric': 'logloss',
             'random_state': 42,
-            'tree_method': 'hist',
             'n_jobs': -1,
+            'verbosity': -1,
         })
 
         return best
 
     def _default_params(self, scale_pos_weight: float) -> Dict:
-        """Optuna olmadığında default parametreler."""
+        """Optuna olmadığında default parametreler (LightGBM)."""
         return {
-            'n_estimators': 300,
-            'max_depth': 5,
+            'n_estimators': 400,
+            'num_leaves': 31,
+            'max_depth': 6,
             'learning_rate': 0.03,
             'subsample': 0.8,
             'colsample_bytree': 0.7,
-            'min_child_weight': 5,
-            'gamma': 0.3,
+            'min_child_samples': 20,
             'reg_alpha': 0.1,
             'reg_lambda': 1.0,
             'scale_pos_weight': scale_pos_weight,
-            'eval_metric': 'logloss',
             'random_state': 42,
-            'tree_method': 'hist',
             'n_jobs': -1,
+            'verbosity': -1,
         }
 
     # ══════════════════════════════════════════════════
@@ -718,23 +776,24 @@ class MetaTrainer:
         X_val: np.ndarray,
         y_val: np.ndarray,
         params: Dict,
-    ) -> xgb.XGBClassifier:
+    ) -> lgb.LGBMClassifier:
         """
-        Final model eğitimi.
+        Final LightGBM model eğitimi.
 
         [FIX #1]: Sadece train verisi ile eğitim (test görmez).
         [FIX #6]: Early stopping ile overfit koruması.
         [FIX #7]: scale_pos_weight ile balance (params icinde).
         """
-        model = xgb.XGBClassifier(
-            **params,
-            early_stopping_rounds=30,
-        )
+        model = lgb.LGBMClassifier(**params)
 
         model.fit(
             X_train, y_train,
             eval_set=[(X_val, y_val)],
-            verbose=False,
+            eval_metric='logloss',
+            callbacks=[
+                lgb.early_stopping(30, verbose=False),
+                lgb.log_evaluation(period=0),
+            ],
         )
 
         return model
@@ -745,7 +804,7 @@ class MetaTrainer:
 
     def _evaluate_model(
         self,
-        model: xgb.XGBClassifier,
+        model: lgb.LGBMClassifier,
         X_test: np.ndarray,
         y_test: np.ndarray,
         raw_wr: float,
@@ -842,7 +901,7 @@ class MetaTrainer:
 
     def _get_feature_importance(
         self,
-        model: xgb.XGBClassifier,
+        model: lgb.LGBMClassifier,
         features: List[str],
     ) -> List[Tuple[str, float]]:
         """Feature importance listesi (sıralı)."""
@@ -903,7 +962,7 @@ class MetaTrainer:
 
     def _save_model(
         self,
-        model: xgb.XGBClassifier,
+        model: lgb.LGBMClassifier,
         features: List[str],
         regime_val: str,
         timeframe: str,

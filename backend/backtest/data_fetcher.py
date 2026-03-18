@@ -9,6 +9,10 @@ class DataFetcher:
         self.exchange = exchange_class({
             'enableRateLimit': True,
             'timeout': 15000,
+            'options': {
+                'defaultType': 'spot',
+                'fetchMarkets': ['spot'],
+            },
         })
         
     def fetch_ohlcv(self, symbol: str, timeframe: str, since: Optional[str] = None, limit: int = 1000) -> pd.DataFrame:

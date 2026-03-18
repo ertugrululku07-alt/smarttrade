@@ -5,6 +5,10 @@ import { getApiUrl } from '@/utils/api';
 
 const SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'AVAX/USDT', 'LINK/USDT'];
 const TIMEFRAMES = ['5m', '15m', '1h', '4h', '1d'];
+const STRATEGIES = [
+    { value: 'bb_mr', label: 'BB Mean Reversion', icon: '📊', desc: 'Bollinger Band bounce + RSI' },
+    { value: 'ict_smc', label: 'ICT / SMC', icon: '🏦', desc: 'Smart Money Concepts + Order Flow' },
+];
 const LIMITS = [
     { label: '~3 days', value: 72 },
     { label: '~1 week', value: 168 },
@@ -51,11 +55,12 @@ function EquityChart({ points, initialBalance }: { points: number[]; initialBala
 
 export default function BacktestPage() {
     const [symbol, setSymbol] = useState('BTC/USDT');
-    const [timeframe, setTf] = useState('15m');
-    const [limit, setLimit] = useState(1000);
+    const [timeframe, setTf] = useState('1h');
+    const [limit, setLimit] = useState(720);
     const [balance, setBal] = useState(1000);
     const [tradeSize, setTS] = useState(15);
     const [minConf, setMC] = useState(0.55);
+    const [strategy, setStrategy] = useState('bb_mr');
 
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
@@ -77,7 +82,7 @@ export default function BacktestPage() {
     const run = async () => {
         setLoading(true); setError(''); setARes(null);
         try {
-            const d = await api('/backtest/run-adaptive', 'POST', { symbol, timeframe, limit, initial_balance: balance, trade_size_pct: tradeSize, min_confidence: minConf });
+            const d = await api('/backtest/run-adaptive', 'POST', { symbol, timeframe, limit, initial_balance: balance, trade_size_pct: tradeSize, min_confidence: minConf, strategy });
             setARes(d);
         } catch (e: any) { setError(e.message); }
         finally { setLoading(false); }
@@ -97,6 +102,22 @@ export default function BacktestPage() {
                 {/* ─── Settings Panel ─────────────────────────────────────── */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                     {/* Market */}
+                    <div className="glass" style={{ borderRadius: '14px', padding: '16px', border: '1px solid rgba(79,158,255,0.15)' }}>
+                        <p style={{ fontSize: '10px', fontWeight: 700, color: 'var(--accent-blue)', marginBottom: '10px', textTransform: 'uppercase' }}>⚡ Strategy</p>
+                        <div style={{ display: 'flex', gap: '6px', marginBottom: '0' }}>
+                            {STRATEGIES.map(s => (
+                                <button key={s.value} onClick={() => setStrategy(s.value)} style={{
+                                    flex: 1, padding: '10px 8px', borderRadius: '8px', border: strategy === s.value ? '2px solid var(--accent-blue)' : '1px solid var(--border)',
+                                    background: strategy === s.value ? 'rgba(79,158,255,0.1)' : 'var(--bg-card)', cursor: 'pointer', transition: 'all 0.2s',
+                                }}>
+                                    <div style={{ fontSize: '18px', marginBottom: '4px' }}>{s.icon}</div>
+                                    <div style={{ fontSize: '11px', fontWeight: 700, color: strategy === s.value ? 'var(--accent-blue)' : 'var(--text-primary)' }}>{s.label}</div>
+                                    <div style={{ fontSize: '9px', color: 'var(--text-muted)', marginTop: '2px' }}>{s.desc}</div>
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
                     <div className="glass" style={{ borderRadius: '14px', padding: '16px' }}>
                         <p style={{ fontSize: '10px', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '10px', textTransform: 'uppercase' }}>Market</p>
                         <div style={{ marginBottom: '10px' }}>
@@ -145,11 +166,11 @@ export default function BacktestPage() {
 
                     <button onClick={run} disabled={loading} style={{
                         padding: '13px', borderRadius: '10px', border: 'none', cursor: loading ? 'wait' : 'pointer', fontWeight: 800, fontSize: '14px',
-                        background: loading ? 'var(--bg-card)' : 'linear-gradient(135deg, #00d8a8, #4f9eff)',
+                        background: loading ? 'var(--bg-card)' : strategy === 'ict_smc' ? 'linear-gradient(135deg, #a855f7, #4f9eff)' : 'linear-gradient(135deg, #00d8a8, #4f9eff)',
                         color: loading ? 'var(--text-muted)' : 'white',
                         boxShadow: loading ? 'none' : '0 4px 20px rgba(0,216,168,0.2)',
                         transition: 'all 0.2s',
-                    }}>{loading ? '⟳ Running AI Engine...' : '🧠 Run AI Adaptive'}</button>
+                    }}>{loading ? '⟳ Running...' : strategy === 'ict_smc' ? '🏦 Run ICT/SMC Backtest' : '📊 Run BB MR Backtest'}</button>
 
                     {error && <div style={{ padding: '10px', borderRadius: '8px', background: 'rgba(244,63,94,0.1)', border: '1px solid rgba(244,63,94,0.2)', fontSize: '11px', color: 'var(--accent-red)', whiteSpace: 'pre-wrap' }}>⚠️ {error}</div>}
                 </div>
@@ -162,8 +183,8 @@ export default function BacktestPage() {
                         const m = adaptiveRes.metrics;
                         return (
                             <>
-                                <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(168,85,247,0.06)', border: '1px solid rgba(168,85,247,0.15)', display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
-                                    <span style={{ fontSize: '12px', color: '#a855f7', fontWeight: 700 }}>🧠 Adaptive AI Engine</span>
+                                <div style={{ padding: '10px 14px', borderRadius: '10px', background: strategy === 'ict_smc' ? 'rgba(168,85,247,0.06)' : 'rgba(0,216,168,0.06)', border: `1px solid ${strategy === 'ict_smc' ? 'rgba(168,85,247,0.15)' : 'rgba(0,216,168,0.15)'}`, display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
+                                    <span style={{ fontSize: '12px', color: strategy === 'ict_smc' ? '#a855f7' : '#00d8a8', fontWeight: 700 }}>{strategy === 'ict_smc' ? '🏦 ICT/SMC Engine' : '📊 BB Mean Reversion'}</span>
                                     <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>📅 {adaptiveRes.date_range?.from?.slice(0, 10)} → {adaptiveRes.date_range?.to?.slice(0, 10)}</span>
                                     <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>🔄 {m.regime_changes} regime changes</span>
                                 </div>

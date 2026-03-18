@@ -7,11 +7,17 @@ import os
 import uuid
 from datetime import datetime
 
+import numpy as np
 from backtest.data_fetcher import DataFetcher
+from backtest.signals import add_all_indicators
 from ai.engine_v3 import PositionManagerV3
 from ai.adaptive_live_adapter import (
-    generate_signal, should_open_position, get_tp_sl_prices
+    generate_signal, should_open_position, get_tp_sl_prices, has_1h_signal
 )
+from ai.entry_gate import five_layer_gate, GateResult
+from strategies.bb_mr_strategy import BBMRStrategyMixin
+from strategies.ict_smc_strategy import ICTSMCStrategyMixin
+from strategies.vwap_scalping_strategy import VWAPScalpingMixin
 
 SCAN_SYMBOLS = [
     "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT",
@@ -19,22 +25,45 @@ SCAN_SYMBOLS = [
 ]
 
 import ccxt
+import requests as _requests
+
+TOP_SYMBOLS_LIMIT = 150  # En likit 150 coin (3 grup × 50)
 
 def get_all_usdt_pairs():
-    exchange = ccxt.binance()
-    markets = exchange.load_markets()
-    excluded = {"USDC/USDT", "USD1/USDT", "TUSD/USDT", "FDUSD/USDT"}
-    usdt_pairs = [
-        symbol for symbol in markets
-        if symbol.endswith('/USDT')
-        and symbol not in excluded
-        and markets[symbol].get('active')
-        and markets[symbol].get('spot')
-    ]
-    return usdt_pairs
+    """
+    Top 150 USDT pair by 24h volume.
+    3 grup halinde 50'şer coin taranır (toplam 150).
+    """
+    try:
+        # 1. 24h ticker ile volume bilgisi çek
+        resp = _requests.get("https://api.binance.com/api/v3/ticker/24hr", timeout=20)
+        resp.raise_for_status()
+        tickers = resp.json()
+
+        excluded = {"USDCUSDT", "USD1USDT", "TUSDUSDT", "FDUSDUSDT"}
+        usdt_tickers = []
+        for t in tickers:
+            sym = t.get('symbol', '')
+            if (sym.endswith('USDT')
+                    and sym not in excluded
+                    and float(t.get('quoteVolume', 0)) > 0):
+                usdt_tickers.append({
+                    'symbol': sym.replace('USDT', '') + '/USDT',
+                    'volume': float(t.get('quoteVolume', 0)),
+                })
+
+        # 2. Volume'a göre sırala, top N al
+        usdt_tickers.sort(key=lambda x: x['volume'], reverse=True)
+        top_pairs = [t['symbol'] for t in usdt_tickers[:TOP_SYMBOLS_LIMIT]]
+
+        if len(top_pairs) < 10:
+            return SCAN_SYMBOLS
+        return top_pairs
+    except Exception:
+        return SCAN_SYMBOLS
 
 
-class LivePaperTrader:
+class LivePaperTrader(VWAPScalpingMixin, ICTSMCStrategyMixin):
     """
     Background'da calisan Otonom Paper Trading (Sanal Bakiye) servisi.
     """
@@ -64,6 +93,12 @@ class LivePaperTrader:
         self._thread = None
         self._ticker_thread = None
 
+        # Shared exchange instance (rate limit shared across all paths)
+        self._exchange = ccxt.binance({
+            'enableRateLimit': True,
+            'options': {'defaultType': 'spot', 'fetchMarkets': ['spot']}
+        })
+
         self.open_trades = []
         self.pending_orders = []
         self.closed_trades = []
@@ -85,7 +120,55 @@ class LivePaperTrader:
         self.symbol_consecutive_losses = {}
         self.consecutive_losses = 0
 
+        # ── Strategy Enable/Disable ──
+        self._strategy_enabled = {
+            'bb_mr': True,
+            'ict_smc': True,
+        }
+
+        # ── v5.1: Backtest-aligned BB MR cooldown ──
+        self._bb_consecutive_sl = 0
+        self._bb_cooldown_until = 0        # timestamp
+        self._bb_recent_outcomes = []      # Son 10 trade sonucu
+        self._bb_last_trade_time = 0       # Son trade zamanı (3h cooldown)
+        self._bb_symbol_cooldown = {}     # {symbol: timestamp} — SL olan sembol cooldown
+
+        # ── ICT/SMC Strategy params ──
+        self._ICT_PARAMS = {
+            'min_confluence': 2,      # Min POI confluence skoru (1-4)
+            'min_rr': 2.0,            # Min Risk:Reward oranı
+            'max_sl_pct': 2.5,        # Max SL yüzdesi
+            'require_sweep': True,    # Likidite sweep zorunlu mu
+            'require_displacement': False,  # Displacement zorunlu mu
+            'killzone_only': False,   # Sadece London/NY killzone
+            'max_notional': 200.0,    # ICT trade başına max notional
+            'max_loss_cap': 8.0,      # ICT trade başına max kayıp
+        }
+        self._ict_consecutive_sl = 0
+        self._ict_cooldown_until = 0
+        self._ict_last_trade_time = 0
+        self._ict_symbol_cooldown = {}
+        self._ict_recent_outcomes = []
+
         self.position_managers = {}
+
+        # ── BB MR user-configurable params ──
+        self._user_max_notional = 150.0   # BB MR trade başına max notional ($)
+        self._user_max_loss_cap = 5.0     # BB MR trade başına max kayıp ($)
+
+        # ── v2.1: Korelasyon Filtresi ──
+        self._btc_returns = None       # BTC 1h return serisi (cache)
+        self._btc_returns_ts = 0       # Son güncelleme zamanı
+
+        # ── v2.1: Günlük/Haftalık Loss Limiti ──
+        self._daily_start_balance = None
+        self._daily_date = None
+        self._weekly_start_balance = None
+        self._weekly_date = None       # ISO week number
+        self._cooldown_until = 0       # 3 ardışık kayıp sonrası mola timestamp
+
+        # ── v2.1: Adaptive Threshold ──
+        self._adaptive_threshold = 0.65  # Başlangıç
 
         self.load_state()
 
@@ -97,15 +180,70 @@ class LivePaperTrader:
         try:
             with open(self.state_file, 'r', encoding='utf-8') as f:
                 state = json.load(f)
+        except Exception as e:
+            self.log(f"[WARN] State corrupt: {e}. Trying backup...")
+            backup_file = self.state_file + ".bak"
+            if os.path.exists(backup_file):
+                try:
+                    with open(backup_file, 'r', encoding='utf-8') as f:
+                        state = json.load(f)
+                    self.log(f"[OK] Backup state restored.")
+                except Exception as e2:
+                    self.log(f"[WARN] Backup also corrupt: {e2}. Starting fresh.")
+                    return
+            else:
+                self.log(f"[WARN] No backup found. Starting fresh.")
+                return
 
+        try:
             self.balance = state.get('balance', self.initial_balance)
             self.open_trades = state.get('open_trades', [])
             self.pending_orders = state.get('pending_orders', [])
             self.closed_trades = state.get('closed_trades', [])
             self.trade_counter = state.get('trade_counter', 0)
-            self.max_open_trades_limit = state.get('max_open_trades_limit', 5)
+            self.max_open_trades_limit = min(state.get('max_open_trades_limit', 8), 8)
             self.consecutive_losses = state.get('consecutive_losses', 0)
             self.symbol_consecutive_losses = state.get('symbol_consecutive_losses', {})
+
+            # Strategy settings restore
+            saved_enabled = state.get('strategy_enabled', {})
+            if saved_enabled:
+                self._strategy_enabled.update(saved_enabled)
+            saved_ict = state.get('ict_params', {})
+            if saved_ict:
+                self._ICT_PARAMS.update(saved_ict)
+            if 'user_max_notional' in state:
+                self._user_max_notional = state['user_max_notional']
+            if 'user_max_loss_cap' in state:
+                self._user_max_loss_cap = state['user_max_loss_cap']
+
+            # BB MR cooldown state restore
+            self._bb_consecutive_sl = state.get('bb_consecutive_sl', 0)
+            self._bb_cooldown_until = state.get('bb_cooldown_until', 0)
+            self._bb_recent_outcomes = state.get('bb_recent_outcomes', [])
+            self._bb_last_trade_time = state.get('bb_last_trade_time', 0)
+            self._bb_symbol_cooldown = state.get('bb_symbol_cooldown', {})
+
+            # ICT cooldown state restore
+            self._ict_consecutive_sl = state.get('ict_consecutive_sl', 0)
+            self._ict_cooldown_until = state.get('ict_cooldown_until', 0)
+            self._ict_last_trade_time = state.get('ict_last_trade_time', 0)
+            self._ict_symbol_cooldown = state.get('ict_symbol_cooldown', {})
+            self._ict_recent_outcomes = state.get('ict_recent_outcomes', [])
+
+            # Risk management state restore
+            self._daily_start_balance = state.get('daily_start_balance', None)
+            daily_date_str = state.get('daily_date', None)
+            if daily_date_str:
+                try:
+                    from datetime import date as _date
+                    self._daily_date = _date.fromisoformat(daily_date_str)
+                except Exception:
+                    self._daily_date = None
+            self._weekly_start_balance = state.get('weekly_start_balance', None)
+            self._weekly_date = state.get('weekly_date', None)
+            self._cooldown_until = state.get('cooldown_until', 0)
+            self._adaptive_threshold = state.get('adaptive_threshold', 0.65)
 
             # Normalize legacy string logs → dict logs
             loaded_logs = state.get('logs', [])
@@ -121,7 +259,7 @@ class LivePaperTrader:
                 f"Open: {len(self.open_trades)}, Pending: {len(self.pending_orders)}"
             )
         except Exception as e:
-            self.log(f"[WARN] Error loading state: {e}. Starting fresh.")
+            self.log(f"[WARN] Error parsing state: {e}. Starting fresh.")
 
     def _sanitize_for_json(self, obj):
         """Recursively convert numpy/pandas types to native Python."""
@@ -150,11 +288,50 @@ class LivePaperTrader:
                     'max_open_trades_limit': self.max_open_trades_limit,
                     'consecutive_losses': self.consecutive_losses,
                     'symbol_consecutive_losses': self.symbol_consecutive_losses,
+                    # Strategy settings
+                    'strategy_enabled': self._strategy_enabled,
+                    'ict_params': self._ICT_PARAMS,
+                    'user_max_notional': getattr(self, '_user_max_notional', 150.0),
+                    'user_max_loss_cap': getattr(self, '_user_max_loss_cap', 5.0),
+                    # BB MR cooldown state
+                    'bb_consecutive_sl': self._bb_consecutive_sl,
+                    'bb_cooldown_until': self._bb_cooldown_until,
+                    'bb_recent_outcomes': self._bb_recent_outcomes,
+                    'bb_last_trade_time': self._bb_last_trade_time,
+                    'bb_symbol_cooldown': self._bb_symbol_cooldown,
+                    # ICT cooldown state
+                    'ict_consecutive_sl': self._ict_consecutive_sl,
+                    'ict_cooldown_until': self._ict_cooldown_until,
+                    'ict_last_trade_time': self._ict_last_trade_time,
+                    'ict_symbol_cooldown': self._ict_symbol_cooldown,
+                    'ict_recent_outcomes': self._ict_recent_outcomes,
+                    # Risk management state
+                    'daily_start_balance': self._daily_start_balance,
+                    'daily_date': str(self._daily_date) if self._daily_date else None,
+                    'weekly_start_balance': self._weekly_start_balance,
+                    'weekly_date': self._weekly_date,
+                    'cooldown_until': self._cooldown_until,
+                    'adaptive_threshold': self._adaptive_threshold,
                 }
             
             clean_state = self._sanitize_for_json(state)
-            with open(self.state_file, 'w', encoding='utf-8') as f:
+            
+            # Atomic write: temp file → rename (prevents corruption on crash)
+            tmp_file = self.state_file + ".tmp"
+            with open(tmp_file, 'w', encoding='utf-8') as f:
                 json.dump(clean_state, f, indent=4)
+            
+            # Backup current state before overwrite
+            if os.path.exists(self.state_file):
+                backup_file = self.state_file + ".bak"
+                try:
+                    import shutil
+                    shutil.copy2(self.state_file, backup_file)
+                except Exception:
+                    pass
+            
+            # Atomic rename
+            os.replace(tmp_file, self.state_file)
         except Exception as e:
             self.log(f"[WARN] Error saving state: {e}")
 
@@ -176,11 +353,33 @@ class LivePaperTrader:
         if self.is_running:
             return
         self.is_running = True
+        # Reset consecutive losses on fresh start (old session losses shouldn't halt new session)
+        self.consecutive_losses = 0
+        self.symbol_consecutive_losses = {}
+
+        # Immediately fetch prices for open trades (no 30s wait for ticker loop)
+        self._prefetch_prices()
+
         self.log("[BOT] Quant AI Live Paper Trader STARTED.")
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
         self._ticker_thread = threading.Thread(target=self._ticker_loop, daemon=True)
         self._ticker_thread.start()
+
+    def _prefetch_prices(self):
+        """Fetch current prices for all open trades immediately on startup."""
+        try:
+            with self.trades_lock:
+                syms = list(set(t['symbol'] for t in self.open_trades))
+            if not syms:
+                return
+            tickers = self._exchange.fetch_tickers(syms)
+            for sym, data in tickers.items():
+                if data and data.get('last'):
+                    self.current_prices[sym] = data['last']
+            self.log(f"[OK] Prefetch prices: {len(self.current_prices)} symbols updated")
+        except Exception as e:
+            self.log(f"[WARN] Prefetch prices failed: {e}")
 
     def stop(self):
         self.is_running = False
@@ -194,7 +393,6 @@ class LivePaperTrader:
         self.logs.insert(0, {"id": str(uuid.uuid4())[:8], "text": fmsg})
         if len(self.logs) > 100:
             self.logs.pop()
-        self._throttled_save()
 
     # ──────────────────────────── Status / Serialisation ──────────────────────
 
@@ -245,11 +443,13 @@ class LivePaperTrader:
             "tp_price": t.get('tp_price', 0),
             "soft_score": t.get('soft_score', 0),
             "entry_type": t.get('entry_type', 'unknown'),
+            "pm_stage": t.get('pm_stage', 0),
             "pnl_history": t.get('pnl_history', []),
         }
 
     def _closed_trade_dict(self, t):
-        pnl_pct = (t['pnl'] / t['margin']) * 100 if t['margin'] > 0 else 0
+        orig_margin = t.get('original_margin', t.get('margin', 0))
+        pnl_pct = (t['pnl'] / orig_margin) * 100 if orig_margin > 0 else 0
         return {
             "id": t['id'], "pair": t['symbol'], "side": t['side'],
             "entry": round(t['entry_price'], 4),
@@ -273,34 +473,58 @@ class LivePaperTrader:
     # ──────────────────────────── Ticker Loop ─────────────────────────────────
 
     def _ticker_loop(self):
-        exchange = ccxt.binance({'enableRateLimit': True})
-
         while self.is_running:
             try:
+                # 1. Collect symbols (short lock)
                 with self.trades_lock:
                     open_syms = [t['symbol'] for t in self.open_trades]
                     pending_syms = [p['symbol'] for p in self.pending_orders]
                     symbols = list(set(open_syms + pending_syms))
+                    # Collect BB MR trades needing RSI update
+                    rsi_needed = set()
+                    for t in self.open_trades:
+                        strat = t.get('strategy', '')
+                        if strat in ('bb_mr_v5.1', 'bb_mr_v6.0', 'bb_mr_v7.1'):
+                            if time.time() - t.get('_last_rsi_update', 0) > 300:
+                                rsi_needed.add(t['symbol'])
 
                 if not symbols:
                     time.sleep(3)
                     continue
 
-                tickers = exchange.fetch_tickers(symbols)
-
+                # 2. Fetch prices — NO LOCK
+                tickers = self._exchange.fetch_tickers(symbols)
                 for sym, data in tickers.items():
-                    if not (data and data.get('last')):
-                        continue
-                    new_price = data['last']
-                    self.current_prices[sym] = new_price  # atomic dict write
+                    if data and data.get('last'):
+                        self.current_prices[sym] = data['last']
 
-                    with self.trades_lock:
-                        self._process_pending_for_symbol(sym, new_price)
-                        self._process_open_for_symbol(sym, new_price)
+                # 3. RSI fetch for BB MR trades — NO LOCK (blocking I/O safe)
+                rsi_cache = {}
+                for sym in rsi_needed:
+                    try:
+                        _df = DataFetcher('binance').fetch_ohlcv(sym, '1h', limit=20)
+                        if _df is not None and len(_df) >= 14:
+                            _df = add_all_indicators(_df)
+                            if 'rsi' in _df.columns:
+                                _rsi = float(_df['rsi'].iloc[-1])
+                                if not np.isnan(_rsi):
+                                    rsi_cache[sym] = _rsi
+                    except Exception:
+                        pass
 
-            except Exception:
-                pass  # Ticker failures are non-critical
+                # 4. Apply prices + RSI + exit checks (short lock)
+                with self.trades_lock:
+                    for sym, data in tickers.items():
+                        if not (data and data.get('last')):
+                            continue
+                        price = data['last']
+                        self._process_pending_for_symbol(sym, price)
+                        self._process_open_for_symbol(sym, price, rsi_cache)
 
+            except Exception as e:
+                self.log(f"[WARN] Ticker loop error: {e}")
+
+            self._throttled_save()
             time.sleep(3)
 
     def _process_pending_for_symbol(self, sym, price):
@@ -338,13 +562,34 @@ class LivePaperTrader:
                     p['absolute_qty'], p['atr'], p['logger_id'],
                 )
 
-    def _process_open_for_symbol(self, sym, price):
-        """Update PnL snapshots & check position manager — under trades_lock."""
+    def _process_open_for_symbol(self, sym, price, rsi_cache=None):
+        """Update PnL snapshots & check exit — under trades_lock."""
         for t in self.open_trades[:]:
             if t['symbol'] != sym:
                 continue
             self._record_pnl_snapshot(t, price)
-            self._check_v3_manager(t, price)
+
+            # VWAP Scalping disabled - not profitable
+            # strat = t.get('strategy', '')
+            # if 'vwap_scalp' in strat:
+            #     self._check_vwap_exit(t, price)
+            
+            if t.get('strategy', '') in ('ict_smc_v1', 'ict_smc_v2'):
+                # ICT/SMC → ATR-based BE/trailing
+                self._check_ict_exit(t, price)
+            else:
+                # Legacy trades → PositionManager
+                self._check_v3_manager(t, price)
+
+    def _calc_partial_pnl(self, t, current_price, close_qty):
+        """Partial close için PnL hesapla (fee dahil)."""
+        n_in = close_qty * t['entry_price']
+        n_out = close_qty * current_price
+        fee = (n_in + n_out) * 0.0002
+        if t['side'] == 'LONG':
+            return (n_out - n_in) - fee
+        else:
+            return (n_in - n_out) - fee
 
     def _record_pnl_snapshot(self, t, current_price):
         if 'pnl_history' not in t:
@@ -375,17 +620,63 @@ class LivePaperTrader:
         return estimate
 
     def _check_v3_manager(self, t, current_price):
-        """PositionManagerV3 exit logic. Called under trades_lock."""
+        """PositionManagerV3 exit logic + TP check + real partial close. Called under trades_lock."""
         tid = t['id']
 
+        # ── TP Price Check → Partial + Tight Trailing (trend runner) ──
+        tp = t.get('tp_price', 0)
+        if tp and tp > 0 and not t.get('tp_hit_converted', False):
+            hit_tp = (t['side'] == 'LONG' and current_price >= tp) or \
+                     (t['side'] == 'SHORT' and current_price <= tp)
+            if hit_tp:
+                # TP'ye ulaşıldı: %30 kârı al, kalanı sıkı trailing ile tut
+                t['tp_hit_converted'] = True
+                partial_pct = 0.30
+                partial_qty = t['qty'] * partial_pct
+                pnl_per_unit = (current_price - t['entry_price']) if t['side'] == 'LONG' \
+                               else (t['entry_price'] - current_price)
+                partial_pnl = partial_qty * pnl_per_unit
+
+                t['qty'] -= partial_qty
+                margin_released = (partial_qty * t['entry_price']) / self.leverage
+                t['margin'] = max(0.0, t.get('margin', 0.0) - margin_released)
+                self.balance += margin_released + partial_pnl
+                t['partial_profit'] = t.get('partial_profit', 0) + partial_pnl
+
+                # PM'i Stage 4'e (sıkı trailing) zorla
+                if tid in self.position_managers:
+                    pm_ref = self.position_managers[tid]
+                    pm_ref.stage = max(pm_ref.stage, 4)
+                    atr_val = t.get('atr', t['entry_price'] * 0.005)
+                    if t['side'] == 'LONG':
+                        tight_trail = current_price - 0.5 * atr_val
+                        pm_ref.trailing_stop = max(pm_ref.trailing_stop or 0, tight_trail)
+                    else:
+                        tight_trail = current_price + 0.5 * atr_val
+                        pm_ref.trailing_stop = min(pm_ref.trailing_stop or 999999, tight_trail)
+                    t['sl_price'] = pm_ref.trailing_stop
+
+                # TP hedefini kaldır — bundan sonra sadece trailing yönetir
+                t['tp_price'] = 0
+
+                self.log(
+                    f"[ROCKET] {t['symbol']} TP HIT → TRAIL MODE: "
+                    f"Partial {partial_pct:.0%} (+${partial_pnl:.2f}) | "
+                    f"Tight trail: {t['sl_price']:.6f} (trend devam ettikçe içeride)"
+                )
+                self._force_save()
+                return
+
+        # ── Initialize PM ──
         if tid not in self.position_managers:
             atr = t.get('atr') or self._get_fallback_atr(t['symbol'], t['entry_price'])
             t['atr'] = atr
-            pm = PositionManagerV3(t, atr)
+            pm = PositionManagerV3(t, atr, leverage=self.leverage)
             pm.stage = t.get('pm_stage', 0)
-            pm.highest_seen = t.get('pm_highest', t['entry_price'])
+            pm.peak_price = t.get('pm_highest', t['entry_price'])
             pm.trailing_stop = t.get('pm_trail', None)
             pm.stop = t.get('sl_price', t['entry_price'])
+            pm.peak_roi = t.get('pm_peak_roi', 0.0)
             self.position_managers[tid] = pm
 
         pm = self.position_managers[tid]
@@ -393,50 +684,317 @@ class LivePaperTrader:
 
         if res['action'] == 'EXIT':
             self._close_all_locked([t], t['symbol'], current_price, res['reason'])
-            return # v3.6: Don't modify 't' after it's moved to closed_trades
+            return
 
         if res['action'] == 'PARTIAL':
+            # Real partial close: book profit for the partial amount
+            partial_pct = res.get('amount', 0.25)
+            partial_qty = t['qty'] * partial_pct
+            pnl_per_unit = (current_price - t['entry_price']) if t['side'] == 'LONG' \
+                           else (t['entry_price'] - current_price)
+            partial_pnl = partial_qty * pnl_per_unit
+
+            # Update trade: reduce qty, release margin, book profit
+            t['qty'] -= partial_qty
+            margin_released = (partial_qty * t['entry_price']) / self.leverage
+            t['margin'] = max(0.0, t.get('margin', 0.0) - margin_released)
+            self.balance += margin_released + partial_pnl
+            t['partial_profit'] = t.get('partial_profit', 0) + partial_pnl
+
             t['sl_price'] = res['stop']
             self.log(
                 f"[MONEY] PARTIAL {t['symbol']}: {res['reason']} "
+                f"| Closed {partial_pct:.0%} (+${partial_pnl:.2f}) "
                 f"| New SL: {res['stop']:.6f}"
             )
+            self._force_save()
+
         elif res['action'] == 'UPDATE_STOP':
             t['sl_price'] = res['stop']
 
-        # Persist PM state (only if trade is still open)
+        # Persist PM state
         t['pm_stage'] = pm.stage
-        t['pm_highest'] = pm.highest_seen
+        t['pm_highest'] = pm.peak_price
         t['pm_trail'] = pm.trailing_stop
+        t['pm_peak_roi'] = pm.peak_roi
         t['sl_price'] = pm.trailing_stop if pm.trailing_stop else pm.stop
+
+    # ──────────────────────────── v2.1 Risk Filters ────────────────────────────
+
+    def _update_btc_returns(self, fetcher):
+        """BTC 1h return serisini 10dk cache ile güncelle."""
+        now = time.time()
+        if self._btc_returns is not None and now - self._btc_returns_ts < 600:
+            return
+        try:
+            btc = fetcher.fetch_ohlcv("BTC/USDT", "1h", limit=100)
+            if btc is not None and len(btc) > 20:
+                self._btc_returns = btc['close'].pct_change().dropna()
+                self._btc_returns_ts = now
+        except Exception:
+            pass
+
+    def _check_correlation_limit(self, symbol: str, direction: str, fetcher) -> bool:
+        """
+        Korelasyon Filtresi: BTC ile yüksek korelasyonlu coinlerde
+        aynı yönde max 3 pozisyon.
+        BTC/ETH hariç — onlar major, ayrı tutulur.
+        """
+        if symbol in ("BTC/USDT", "ETH/USDT"):
+            return True  # Major'lar her zaman geçer
+
+        self._update_btc_returns(fetcher)
+        if self._btc_returns is None or len(self._btc_returns) < 20:
+            return True  # Veri yoksa engelleme
+
+        # Bu coin'in BTC korelasyonunu hesapla
+        try:
+            coin_df = fetcher.fetch_ohlcv(symbol, "1h", limit=100)
+            if coin_df is None or len(coin_df) < 30:
+                return True
+            coin_returns = coin_df['close'].pct_change().dropna()
+            min_len = min(len(self._btc_returns), len(coin_returns))
+            if min_len < 20:
+                return True
+            corr = self._btc_returns.iloc[-min_len:].reset_index(drop=True).corr(
+                coin_returns.iloc[-min_len:].reset_index(drop=True)
+            )
+        except Exception:
+            return True
+
+        if abs(corr) < 0.80:
+            return True  # Düşük korelasyon — sınır yok
+
+        # Yüksek korelasyon: aynı yönde max 3
+        with self.trades_lock:
+            same_dir_correlated = 0
+            for t in self.open_trades:
+                if t['side'] == direction and t['symbol'] not in ("BTC/USDT", "ETH/USDT"):
+                    same_dir_correlated += 1
+
+        if same_dir_correlated >= 3:
+            self.log(f"  [CORR] {symbol} {direction}: BTC corr={corr:.2f}, same-dir={same_dir_correlated}/3 → SKIP")
+            return False
+        return True
+
+    def _check_loss_limits(self) -> bool:
+        """
+        Günlük/Haftalık kayıp limiti ve ardışık kayıp molası.
+        Returns False → trade açma.
+        """
+        now = datetime.now()
+        today = now.date()
+        week_num = now.isocalendar()[1]
+
+        # Günlük reset
+        if self._daily_date != today:
+            self._daily_date = today
+            self._daily_start_balance = self.balance
+
+        # Haftalık reset
+        if self._weekly_date != week_num:
+            self._weekly_date = week_num
+            self._weekly_start_balance = self.balance
+
+        # Cooldown kontrolü (3 ardışık kayıp → 30dk mola)
+        if self._cooldown_until > 0:
+            if time.time() < self._cooldown_until:
+                remaining = int(self._cooldown_until - time.time())
+                if remaining % 60 == 0:
+                    self.log(f"[COOL] Cooldown aktif: {remaining // 60}dk kaldı")
+                return False
+            else:
+                # Cooldown bitti → sıfırla
+                self._cooldown_until = 0
+                self.consecutive_losses = 0
+                self.log("[COOL] Mola bitti, trade açılabilir")
+
+        # 3 ardışık kayıp → 30 dakika mola
+        if self.consecutive_losses >= 3:
+            self._cooldown_until = time.time() + 1800  # 30 dk
+            self.log(f"[COOL] 3 ardışık kayıp → 30dk mola başladı")
+            return False
+
+        # Günlük max %4 kayıp
+        if self._daily_start_balance and self._daily_start_balance > 0:
+            daily_loss_pct = (self._daily_start_balance - self.balance) / self._daily_start_balance * 100
+            if daily_loss_pct >= 4.0:
+                self.log(f"[LIMIT] Günlük kayıp limiti: -%{daily_loss_pct:.1f} ≥ %4 → Bugün dur")
+                return False
+
+        # Haftalık max %8 kayıp
+        if self._weekly_start_balance and self._weekly_start_balance > 0:
+            weekly_loss_pct = (self._weekly_start_balance - self.balance) / self._weekly_start_balance * 100
+            if weekly_loss_pct >= 8.0:
+                self.log(f"[LIMIT] Haftalık kayıp limiti: -%{weekly_loss_pct:.1f} ≥ %8 → Haftayı kapat")
+                return False
+
+        return True
+
+    def _get_killzone_multiplier(self) -> float:
+        """
+        Killzone bazlı position size çarpanı.
+        London/NY = 1.2x, Asia = 0.6x, Dead zone = 0 (trade açma).
+        """
+        utc_now = datetime.utcnow()
+        hour = utc_now.hour
+
+        # London Killzone: 07:00-10:00 UTC
+        if 7 <= hour < 10:
+            return 1.2
+        # NY AM Killzone: 12:00-15:00 UTC
+        if 12 <= hour < 15:
+            return 1.2
+        # NY PM / London Close: 15:00-17:00 UTC
+        if 15 <= hour < 17:
+            return 1.0
+        # Asia Session: 00:00-03:00 UTC
+        if 0 <= hour < 3:
+            return 0.6
+        # Dead Zone: 03:00-07:00 UTC (gece yarısı sonrası)
+        if 3 <= hour < 7:
+            return 0.0  # Trade açma
+        # Diğer saatler
+        return 0.8
+
+    def _get_scan_interval(self) -> int:
+        """Adaptive scan interval: killzone'da hızlı, off-hours'da yavaş."""
+        hour = datetime.utcnow().hour
+        # NY AM Killzone (12-15 UTC): Her 30s
+        if 12 <= hour < 15:
+            return 30
+        # London Killzone (07-10 UTC): Her 45s
+        if 7 <= hour < 10:
+            return 45
+        # Active hours (10-17 UTC): Her 60s
+        if 10 <= hour < 17:
+            return 60
+        # Off-hours: Her 120s
+        return 120
+
+    def _check_daily_structure(self, symbol: str, direction: str, fetcher) -> float:
+        """
+        1D trend kontrolü. HTF uyum varsa büyük pozisyon, çatışma varsa küçük.
+        Returns: multiplier (0.5 = çatışma, 1.0 = nötr, 1.3 = tam uyum)
+        """
+        try:
+            df_1d = fetcher.fetch_ohlcv(symbol, "1d", limit=50)
+            if df_1d is None or len(df_1d) < 20:
+                return 1.0  # Veri yoksa nötr
+
+            c = df_1d['close'].astype(float)
+            ema20 = c.ewm(span=20, adjust=False).mean()
+            ema50 = c.ewm(span=50, adjust=False).mean() if len(c) >= 50 else ema20
+
+            cp = float(c.iloc[-1])
+            ema20_val = float(ema20.iloc[-1])
+            ema50_val = float(ema50.iloc[-1])
+
+            # Daily trend tespiti
+            daily_bullish = cp > ema20_val and ema20_val > ema50_val
+            daily_bearish = cp < ema20_val and ema20_val < ema50_val
+
+            # Weekly high/low awareness
+            weekly_high = float(df_1d['high'].iloc[-5:].max())
+            weekly_low = float(df_1d['low'].iloc[-5:].min())
+            weekly_range = weekly_high - weekly_low
+            near_weekly_high = (weekly_high - cp) / weekly_range < 0.15 if weekly_range > 0 else False
+            near_weekly_low = (cp - weekly_low) / weekly_range < 0.15 if weekly_range > 0 else False
+
+            if direction == 'LONG':
+                if daily_bullish and not near_weekly_high:
+                    return 1.3   # Tam uyum — büyük pozisyon
+                elif daily_bearish:
+                    return 0.5   # Çatışma — küçük pozisyon
+                elif near_weekly_high:
+                    return 0.6   # Weekly resistance yakın
+            elif direction == 'SHORT':
+                if daily_bearish and not near_weekly_low:
+                    return 1.3
+                elif daily_bullish:
+                    return 0.5
+                elif near_weekly_low:
+                    return 0.6
+
+            return 1.0  # Nötr
+        except Exception:
+            return 1.0
+
+    def _get_adaptive_threshold(self) -> float:
+        """
+        Son 20 trade WR'ye göre dinamik meta threshold.
+        WR > %70 → threshold düşür (daha çok trade)
+        WR < %50 → threshold yükselt (daha az trade)
+        """
+        with self.trades_lock:
+            recent = self.closed_trades[-20:] if len(self.closed_trades) >= 10 else []
+
+        if not recent:
+            return 0.65  # Default
+
+        wins = sum(1 for t in recent if t.get('pnl', 0) > 0)
+        wr = wins / len(recent)
+
+        if wr >= 0.70:
+            thr = 0.55   # İyi dönem → daha çok trade
+        elif wr >= 0.60:
+            thr = 0.60
+        elif wr >= 0.50:
+            thr = 0.65   # Normal
+        elif wr >= 0.40:
+            thr = 0.70   # Kötü dönem → daha az trade
+        else:
+            thr = 0.75   # Çok kötü → çok seçici
+
+        if thr != self._adaptive_threshold:
+            self.log(f"[ADAPT] Threshold: {self._adaptive_threshold:.2f} → {thr:.2f} (WR={wr:.0%}, N={len(recent)})")
+            self._adaptive_threshold = thr
+
+        return thr
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # BB MR Strategy → strategies/bb_mr_strategy.py (BBMRStrategyMixin)
+    # ICT/SMC Strategy → strategies/ict_smc_strategy.py (ICTSMCStrategyMixin)
+    # ══════════════════════════════════════════════════════════════════════════
 
     # ──────────────────────────── Scan Loop ────────────────────────────────────
 
     def _run_loop(self):
         fetcher = DataFetcher('binance')
+        _last_symbol_refresh = 0
+        _SYMBOL_REFRESH_INTERVAL = 1800  # 30 dakikada bir
 
         while self.is_running:
             try:
-                # Dynamic symbol refresh
-                try:
-                    all_pairs = get_all_usdt_pairs()
-                    with self.trades_lock:
-                        self.scanned_symbols = all_pairs
-                    self.log(
-                        f"[SYNC] Dynamic symbols: {len(self.scanned_symbols)} USDT pairs"
-                    )
-                except Exception as e:
-                    msg = str(e).lower()
-                    if "451" in msg or "restricted" in msg:
+                # Dynamic symbol refresh (30 dakikada bir)
+                if time.time() - _last_symbol_refresh > _SYMBOL_REFRESH_INTERVAL:
+                    try:
+                        all_pairs = get_all_usdt_pairs()
+                        with self.trades_lock:
+                            self.scanned_symbols = all_pairs
                         self.log(
-                            "[WARN] Binance region restriction (HTTP 451). "
-                            "Using fallback symbols."
+                            f"[SYNC] Top {len(self.scanned_symbols)} liquid USDT pairs (volume-filtered)"
                         )
-                    else:
-                        self.log(f"[WARN] Symbol fetch failed: {e}. Using fallback.")
+                        _last_symbol_refresh = time.time()
+                    except Exception as e:
+                        msg = str(e).lower()
+                        if "451" in msg or "restricted" in msg:
+                            self.log(
+                                "[WARN] Binance region restriction (HTTP 451). "
+                                "Using fallback symbols."
+                            )
+                        else:
+                            self.log(f"[WARN] Symbol fetch failed: {e}. Using fallback.")
 
-                self.log(f"[SEARCH] Scanning {len(self.scanned_symbols)} markets...")
-                self._scan_and_trade(fetcher)
+                # ── Strategy 1: VWAP Scalping (DISABLED - not profitable) ──
+                # if self._strategy_enabled.get('vwap_scalp', False):
+                #     self.log(f"[SEARCH] VWAP Scalping v1.0 scanning {len(self.scanned_symbols)} markets...")
+                #     self._vwap_scan(fetcher)
+
+                # ── Strategy 2: ICT/SMC ──
+                if self._strategy_enabled.get('ict_smc', True):
+                    self.log(f"[SEARCH] ICT/SMC v2.4 scanning {len(self.scanned_symbols)} markets...")
+                    self._ict_smc_scan(fetcher)
 
             except Exception as e:
                 err = str(e).lower()
@@ -447,43 +1005,53 @@ class LivePaperTrader:
                     self.log(f"[FAIL] Scan loop error: {e}")
                 time.sleep(0.5)
 
-            # Wait between scan cycles
-            for _ in range(60):
+            # Adaptive scan interval (killzone bazlı)
+            scan_wait = self._get_scan_interval()
+            for _ in range(scan_wait):
                 if not self.is_running:
                     break
                 time.sleep(1)
 
+
     def _scan_and_trade(self, fetcher: DataFetcher):
-        # BTC bias
+        # ── DEPRECATED: Legacy scan — artık kullanılmıyor. _bb_mr_scan + _ict_smc_scan aktif. ──
+        # ── v2.1: Günlük/Haftalık kayıp limiti ──
+        if not self._check_loss_limits():
+            return
+
+        # ── v2.1: Killzone dead zone kontrolü ──
+        kz_mult = self._get_killzone_multiplier()
+        if kz_mult <= 0:
+            self.log("[KZ] Dead zone (03:00-07:00 UTC) — trade açılmaz")
+            return
+
+        # ── v2.1: BTC korelasyon cache güncelle ──
+        self._update_btc_returns(fetcher)
+
+        # ── v2.1: Adaptive threshold güncelle ──
+        adaptive_thr = self._get_adaptive_threshold()
+
+        # BTC bias (non-blocking: scan continues even if BTC fails)
+        btc_4h = None
         try:
             btc_4h = fetcher.fetch_ohlcv("BTC/USDT", "4h", limit=100)
-            if btc_4h.empty:
-                self.log("[WARN] BTC 4h empty — skipping scan.")
-                return
+            if btc_4h is not None and btc_4h.empty:
+                btc_4h = None
         except Exception as e:
-            self.log(f"[WARN] BTC 4h fetch error: {e}")
-            return
+            self.log(f"[WARN] BTC 4h fetch error: {e}. Continuing without BTC bias.")
+            btc_4h = None
+
+        skipped_prefilter = 0
 
         for i, symbol in enumerate(self.scanned_symbols[:]):
             if not self.is_running:
                 break
 
             try:
-                df_1h = fetcher.fetch_ohlcv(symbol, self.timeframe, limit=100)
-                if df_1h.empty or len(df_1h) < 50:
-                    continue
-
-                df_15m = fetcher.fetch_ohlcv(symbol, self.secondary_tf, limit=100)
-                if df_15m.empty or len(df_15m) < 50:
-                    continue
-
-                df_4h = fetcher.fetch_ohlcv(symbol, "4h", limit=100)
-                if df_4h.empty or len(df_4h) < 50:
-                    continue
-
                 if i % 30 == 0:
                     self.log(f"[*][*] Scanning {symbol} ({i}/{len(self.scanned_symbols)})")
 
+                # ── STEP 0: Early checks BEFORE any API calls ──
                 with self.trades_lock:
                     has_active = any(
                         t['symbol'] == symbol for t in self.open_trades
@@ -494,10 +1062,43 @@ class LivePaperTrader:
                     active_count = len(self.open_trades) + len(self.pending_orders)
                     can_open = active_count < self.max_open_trades_limit
 
-                if has_active or has_pending or not can_open:
+                    # Direction diversity: max %60 aynı yön
+                    long_count = sum(1 for t in self.open_trades if t['side'] == 'LONG')
+                    short_count = sum(1 for t in self.open_trades if t['side'] == 'SHORT')
+                    max_one_dir = max(3, int(self.max_open_trades_limit * 0.6))
+
+                    # Strategy diversity: max 4 trade per strategy
+                    strategy_counts = {}
+                    for t in self.open_trades:
+                        sname = t.get('strategy', 'unknown')
+                        strategy_counts[sname] = strategy_counts.get(sname, 0) + 1
+
+                if has_active or has_pending:
                     continue
 
-                # --- HYBRID AI ENGINE DECISION ---
+                # ── STEP 1: Fetch only 1h data ──
+                df_1h = fetcher.fetch_ohlcv(symbol, self.timeframe, limit=100)
+                if df_1h.empty or len(df_1h) < 50:
+                    continue
+
+                # ── STEP 2: Quick 1h pre-filter (no 15m/4h API calls yet) ──
+                if not has_1h_signal(df_1h, symbol, self.timeframe, self.secondary_tf):
+                    skipped_prefilter += 1
+                    continue
+
+                # ── STEP 3: Signal found! Fetch 15m + 4h ──
+                if not can_open:
+                    continue
+
+                df_15m = fetcher.fetch_ohlcv(symbol, self.secondary_tf, limit=100)
+                if df_15m.empty or len(df_15m) < 50:
+                    continue
+
+                df_4h = fetcher.fetch_ohlcv(symbol, "4h", limit=100)
+                if df_4h.empty or len(df_4h) < 50:
+                    continue
+
+                # ── STEP 4: Full signal generation with all timeframes ──
                 decision = generate_signal(
                     df=df_1h,
                     df_secondary=df_15m,
@@ -508,39 +1109,110 @@ class LivePaperTrader:
                 )
 
                 if should_open_position(decision):
+                    sig_dir = decision['signal']
+
+                    # Direction diversity check
+                    if sig_dir == 'LONG' and long_count >= max_one_dir:
+                        print(f"  [SKIP] {symbol} LONG: direction diversity (L={long_count}/{max_one_dir})")
+                        continue
+                    if sig_dir == 'SHORT' and short_count >= max_one_dir:
+                        print(f"  [SKIP] {symbol} SHORT: direction diversity (S={short_count}/{max_one_dir})")
+                        continue
+
+                    # Strategy diversity check (max 4 per strategy)
+                    sig_strat = decision.get('strategy', 'unknown')
+                    if strategy_counts.get(sig_strat, 0) >= 4:
+                        print(f"  [SKIP] {symbol}: strategy diversity ({sig_strat}={strategy_counts[sig_strat]}/4)")
+                        continue
                     if self.consecutive_losses >= 10:
                         self.log("[STOP] ENGINE HALT: Max consecutive losses limit reached")
                         self.stop()
                         break
 
+                    # ── v2.1: Korelasyon filtresi ──
+                    if not self._check_correlation_limit(symbol, sig_dir, fetcher):
+                        continue
+
+                    # ── v2.1: Adaptive threshold ──
+                    meta_conf = decision.get('meta_confidence', 0.0)
+                    if meta_conf > 0 and meta_conf < adaptive_thr:
+                        print(f"  [ADAPT] {symbol}: meta={meta_conf:.2f} < thr={adaptive_thr:.2f} → SKIP")
+                        continue
+
+                    # ══════════════════════════════════════════════
+                    # 5-LAYER ENTRY GATE v2.1
+                    # ══════════════════════════════════════════════
                     cp = float(df_1h['close'].iloc[-1])
-                    
+
+                    # Ön TP/SL hesapla
                     tp_price = decision.get('tp_price', 0.0)
                     sl_price = decision.get('sl_price', 0.0)
-                    
                     if tp_price == 0.0 or sl_price == 0.0:
-                        # Fallback TP/SL
-                        atr_proxy = df_1h['high'].iloc[-14:].max() - df_1h['low'].iloc[-14:].min()
+                        atr_proxy = float(df_1h['high'].iloc[-14:].max() - df_1h['low'].iloc[-14:].min())
                         tp_price, sl_price = get_tp_sl_prices(decision, cp, atr_proxy)
+
+                    # 5m veri çek (Katman 3 & 4 için)
+                    df_5m = None
+                    try:
+                        df_5m = fetcher.fetch_ohlcv(symbol, "5m", limit=60)
+                        if df_5m is not None and len(df_5m) < 15:
+                            df_5m = None
+                    except Exception:
+                        pass
+
+                    gate = five_layer_gate(
+                        direction=sig_dir,
+                        df_1h=df_1h,
+                        df_5m=df_5m,
+                        df_4h=df_4h,
+                        entry_price=cp,
+                        sl_price=sl_price,
+                        tp_price=tp_price,
+                        meta_confidence=decision.get('meta_confidence', 0.5),
+                        regime=decision.get('regime', 'trending'),
+                        strategy=decision.get('strategy', 'unknown'),
+                    )
+
+                    if not gate.passed:
+                        print(f"  [GATE] {symbol} {sig_dir}: {gate.summary()}")
+                        continue
+
+                    # Gate geçti — yapısal SL/TP kullan
+                    sl_price = gate.sl_price if gate.sl_price > 0 else sl_price
+                    tp_price = gate.tp_price if gate.tp_price > 0 else tp_price
+
+                    # Hard SL distance cap: max 2.5% (gate zaten kontrol etti ama güvenlik)
+                    max_sl_dist = cp * 0.025
+                    raw_sl_dist = abs(cp - sl_price)
+                    if raw_sl_dist > max_sl_dist:
+                        if sig_dir == 'LONG':
+                            sl_price = cp - max_sl_dist
+                        else:
+                            sl_price = cp + max_sl_dist
 
                     risk_abs = abs(cp - sl_price)
                     if risk_abs <= 0: risk_abs = cp * 0.01
-                    
-                    # Size calculation
+
+                    # Size calculation (v2.1: killzone + daily structure çarpanları)
                     loss_scaling = {0: 1.0, 1: 1.0, 2: 0.8, 3: 0.6}.get(self.consecutive_losses, 0.5)
                     position_conf = decision.get('position_size', 0.5)
-                    risk_amount = self.balance * self.risk_pct * loss_scaling * position_conf
+                    htf_mult = self._check_daily_structure(symbol, sig_dir, fetcher)
+                    risk_amount = self.balance * self.risk_pct * loss_scaling * position_conf * kz_mult * htf_mult
                     raw_qty = risk_amount / risk_abs
                     max_qty = (self.balance * self.leverage) / cp
-                    qty = min(raw_qty, max_qty)
+                    max_margin = self.balance * 0.02 * position_conf
+                    max_qty_margin = (max_margin * self.leverage) / cp
+                    qty = min(raw_qty, max_qty, max_qty_margin)
 
-                    logger_id = f"{symbol}_{decision['signal']}_{int(time.time())}"
+                    logger_id = f"{symbol}_{sig_dir}_{int(time.time())}"
                     atr_val = risk_abs / decision.get('sl_mult', 1.0)
+
+                    print(f"  [ENTRY] {symbol} {sig_dir}: {gate.summary()}")
 
                     with self.trades_lock:
                         self._open_locked(
                             symbol=symbol,
-                            side=decision['signal'],
+                            side=sig_dir,
                             price=cp,
                             multiplier=1.0,
                             tp_price=tp_price,
@@ -562,6 +1234,121 @@ class LivePaperTrader:
                     self.log(f"[FAIL] Error scanning {symbol}: {e}")
                     time.sleep(0.5)
 
+        if skipped_prefilter > 0:
+            self.log(f"[PERF] Pre-filter: {skipped_prefilter}/{len(self.scanned_symbols)} symbols skipped (no 1h signal)")
+
+    # ──────────────────────────── 5m Precision Entry ──────────────────────────
+
+    @staticmethod
+    def _confirm_5m_entry(df_5m: pd.DataFrame, direction: str, symbol: str) -> bool:
+        """
+        DEPRECATED: entry_gate.py Layer 3 (TETİK) bu işlevi üstlendi.
+        5m chart'ta yapısal giriş onayı.
+        1h sinyal + 15m zamanlama geçtikten sonra, 5m'de micro-structure aranır.
+
+        LONG onayı:
+          - Son 3 mum içinde bullish yapı (engulfing/hammer/higher low)
+          - EMA9 üstünde veya EMA9'a doğru bounce
+          - RSI 35-70 arası (ne aşırı satılmış ne aşırı alınmış)
+          - Momentum pozitif (son close > 3 bar önceki close)
+
+        SHORT onayı: Tam tersi.
+        """
+        try:
+            if df_5m is None or len(df_5m) < 20:
+                return True  # 5m verisi yoksa engelleme
+
+            c = df_5m['close'].astype(float)
+            o = df_5m['open'].astype(float)
+            h = df_5m['high'].astype(float)
+            l = df_5m['low'].astype(float)
+
+            # EMA9 hesapla
+            ema9 = c.ewm(span=9, adjust=False).mean()
+            cp = float(c.iloc[-1])
+            ema9_val = float(ema9.iloc[-1])
+
+            # RSI14 hesapla
+            delta = c.diff()
+            gain = delta.where(delta > 0, 0.0).rolling(14).mean()
+            loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
+            rs = gain / loss.replace(0, 1e-10)
+            rsi = 100 - (100 / (1 + rs))
+            rsi_val = float(rsi.iloc[-1]) if not rsi.empty else 50.0
+
+            # Son 3 mum analizi
+            bodies = []
+            wicks_upper = []
+            wicks_lower = []
+            for i in range(-3, 0):
+                body = float(c.iloc[i] - o.iloc[i])
+                full_range = float(h.iloc[i] - l.iloc[i])
+                if full_range > 0:
+                    upper_wick = float(h.iloc[i] - max(c.iloc[i], o.iloc[i])) / full_range
+                    lower_wick = float(min(c.iloc[i], o.iloc[i]) - l.iloc[i]) / full_range
+                else:
+                    upper_wick = 0.0
+                    lower_wick = 0.0
+                bodies.append(body)
+                wicks_upper.append(upper_wick)
+                wicks_lower.append(lower_wick)
+
+            # Momentum: son close vs 5 bar önceki
+            mom_5 = (cp - float(c.iloc[-6])) / float(c.iloc[-6]) * 100 if len(c) >= 6 else 0.0
+
+            # Higher low / Lower high
+            recent_lows = [float(l.iloc[i]) for i in range(-4, 0)]
+            recent_highs = [float(h.iloc[i]) for i in range(-4, 0)]
+            higher_low = recent_lows[-1] > min(recent_lows[:-1]) if len(recent_lows) >= 2 else False
+            lower_high = recent_highs[-1] < max(recent_highs[:-1]) if len(recent_highs) >= 2 else False
+
+            if direction == 'LONG':
+                # Bullish checks
+                bullish_candle = bodies[-1] > 0  # Son mum yeşil
+                bullish_engulf = bodies[-1] > 0 and bodies[-2] < 0 and abs(bodies[-1]) > abs(bodies[-2])
+                hammer = lower_wick[-1] > 0.5 and bodies[-1] > 0  # Uzun alt fitil + yeşil
+                ema_ok = cp >= ema9_val * 0.998  # EMA9 üstü veya çok yakın
+                rsi_ok = 30 < rsi_val < 72  # Aşırı alınmış değil
+                mom_ok = mom_5 > -0.3  # Güçlü düşüş yok
+
+                structure_ok = bullish_candle or bullish_engulf or hammer or higher_low
+                confirmed = structure_ok and ema_ok and rsi_ok and mom_ok
+
+                if not confirmed:
+                    reasons = []
+                    if not structure_ok: reasons.append("no_bull_structure")
+                    if not ema_ok: reasons.append(f"below_ema9")
+                    if not rsi_ok: reasons.append(f"rsi={rsi_val:.0f}")
+                    if not mom_ok: reasons.append(f"mom={mom_5:.1f}%")
+                    print(f"  [5m REJECT] {symbol} LONG: {', '.join(reasons)}")
+                    return False
+
+            elif direction == 'SHORT':
+                # Bearish checks
+                bearish_candle = bodies[-1] < 0  # Son mum kırmızı
+                bearish_engulf = bodies[-1] < 0 and bodies[-2] > 0 and abs(bodies[-1]) > abs(bodies[-2])
+                shooting_star = wicks_upper[-1] > 0.5 and bodies[-1] < 0
+                ema_ok = cp <= ema9_val * 1.002  # EMA9 altı veya çok yakın
+                rsi_ok = 28 < rsi_val < 70  # Aşırı satılmış değil
+                mom_ok = mom_5 < 0.3  # Güçlü yükseliş yok
+
+                structure_ok = bearish_candle or bearish_engulf or shooting_star or lower_high
+                confirmed = structure_ok and ema_ok and rsi_ok and mom_ok
+
+                if not confirmed:
+                    reasons = []
+                    if not structure_ok: reasons.append("no_bear_structure")
+                    if not ema_ok: reasons.append(f"above_ema9")
+                    if not rsi_ok: reasons.append(f"rsi={rsi_val:.0f}")
+                    if not mom_ok: reasons.append(f"mom={mom_5:.1f}%")
+                    print(f"  [5m REJECT] {symbol} SHORT: {', '.join(reasons)}")
+                    return False
+
+            return True
+        except Exception as e:
+            print(f"  [5m WARN] {symbol}: {e}")
+            return True  # Hata durumunda engelleme
+
     # ──────────────────────────── Trade Execution ─────────────────────────────
 
     def _open(self, symbol, side, price, multiplier,
@@ -578,6 +1365,10 @@ class LivePaperTrader:
                      tp_price=0.0, sl_price=0.0, signal_result=None,
                      absolute_qty=None, atr=0.001, logger_id=None):
         """Must be called under trades_lock."""
+        # Hard guard: never exceed max open trades (prevents TOCTOU race)
+        if len(self.open_trades) >= self.max_open_trades_limit:
+            return None
+
         if absolute_qty:
             qty = absolute_qty
         else:
@@ -602,7 +1393,9 @@ class LivePaperTrader:
             "entry_price": price,
             "qty": qty,
             "margin": margin,
+            "original_margin": margin,
             "entry_time": datetime.now().strftime("%H:%M:%S"),
+            "entry_timestamp": time.time(),
             "tp_price": tp_price,
             "sl_price": sl_price,
             "atr": atr,
@@ -619,7 +1412,9 @@ class LivePaperTrader:
         }
 
         self.open_trades.append(t)
-        self.position_managers[tid] = PositionManagerV3(t, atr)
+        # BB MR trades → pure TP/SL, PositionManager gereksiz
+        if sig.get('strategy', '') not in ('bb_mr_v5.1', 'bb_mr_v6.0', 'bb_mr_v7.1'):
+            self.position_managers[tid] = PositionManagerV3(t, atr, leverage=self.leverage)
 
         self.log(
             f"[GRN] OPEN {side} {symbol} @ {price:.6f} | "
@@ -643,18 +1438,14 @@ class LivePaperTrader:
             pnl, pnl_pct = self._compute_pnl(t, exit_price)
             self.balance += t['margin'] + pnl
 
+            # Total PnL = kalan kısmın PnL'si + partial close'lardan gelen kâr
+            partial_profit = t.get('partial_profit', 0)
+            total_pnl = pnl + partial_profit
+
             t['exit_price'] = exit_price
             t['exit_time'] = datetime.now().strftime("%H:%M:%S")
-            t['pnl'] = pnl
+            t['pnl'] = total_pnl
             t['reason'] = reason
-
-            # Logger exit
-            try:
-                self.engine_v3.logger.log_exit(
-                    t.get('logger_id', ''), exit_price, reason
-                )
-            except Exception:
-                pass
 
             self.closed_trades.append(t)
             self.open_trades.remove(t)
@@ -662,10 +1453,13 @@ class LivePaperTrader:
             # Manager cleanup
             self.position_managers.pop(t['id'], None)
 
-            # is_win tracking directly replacing the EngineV3 logic
-            is_win = pnl > 0
+            # is_win total PnL'e bakmalı (partial profit dahil)
+            is_win = total_pnl > 0
             if is_win:
                 self.consecutive_losses = max(0, self.consecutive_losses - 1)
+                # v2.1: Win gelince cooldown sıfırla
+                if self.consecutive_losses < 3:
+                    self._cooldown_until = 0
             else:
                 self.consecutive_losses += 1
 
@@ -678,11 +1472,12 @@ class LivePaperTrader:
                 )
 
             max_p = t.get('max_pnl_pct', 0)
-            pnl_str = f"+${pnl:.2f}" if pnl > 0 else f"-${abs(pnl):.2f}"
-            icon = "[OK]" if pnl > 0 else "[FAIL]"
+            pnl_str = f"+${total_pnl:.2f}" if total_pnl > 0 else f"-${abs(total_pnl):.2f}"
+            icon = "[WIN]" if total_pnl > 0 else "[LOSS]"
+            partial_note = f" (incl ${partial_profit:+.2f} partial)" if partial_profit != 0 else ""
             self.log(
                 f"{icon} CLOSE {t['side']} {symbol} @ {exit_price:.6f} | "
-                f"PnL: {pnl_str} ({pnl_pct:.2f}%) | "
+                f"PnL: {pnl_str} ({pnl_pct:.2f}%){partial_note} | "
                 f"Max: {max_p:.2f}% | Reason: {reason}"
             )
 
@@ -692,37 +1487,186 @@ class LivePaperTrader:
     # ──────────────────────────── Manual Actions ──────────────────────────────
 
     def close_trade(self, trade_id: str):
+        # 1. Find trade + symbol (short lock)
         with self.trades_lock:
             trade = next(
                 (t for t in self.open_trades if t['id'] == trade_id), None
             )
             if not trade:
                 return {"success": False, "message": "Trade not found."}
-
             sym = trade['symbol']
             cp = self.current_prices.get(sym, trade['entry_price'])
 
-            # Live price fallback (Network I/O is risky here but 1m is fast)
-            if cp == trade['entry_price']:
-                try:
-                    fetcher = DataFetcher('binance')
-                    df = fetcher.fetch_ohlcv(sym, '1m', limit=2)
-                    if not df.empty:
-                        cp = df.iloc[-1]['close']
-                except Exception:
-                    pass
+        # 2. Live price fallback — NO LOCK (blocking I/O safe)
+        if cp == trade['entry_price']:
+            try:
+                ticker = self._exchange.fetch_ticker(sym)
+                if ticker and ticker.get('last'):
+                    cp = ticker['last']
+            except Exception:
+                pass
 
+        # 3. Close trade (short lock)
+        with self.trades_lock:
+            if trade not in self.open_trades:
+                return {"success": False, "message": "Trade already closed."}
             self._close_all_locked([trade], sym, cp, "MANUAL_CLOSE")
-            
+
         return {
             "success": True,
             "message": f"Trade {trade_id} closed at {cp:.4f}.",
         }
 
-    def update_settings(self, max_open_trades: int):
-        if max_open_trades <= 0:
-            return {"success": False, "message": "Invalid value"}
-        self.max_open_trades_limit = max_open_trades
+    def update_settings(self, max_open_trades: int = None, max_notional: float = None,
+                         max_loss_cap: float = None, min_rr: float = None,
+                         tp_min: float = None, balance: float = None,
+                         bb_mr_enabled: bool = None, ict_smc_enabled: bool = None,
+                         ict_min_confluence: int = None, ict_min_rr: float = None,
+                         ict_max_sl_pct: float = None, ict_require_sweep: bool = None,
+                         ict_require_displacement: bool = None, ict_killzone_only: bool = None,
+                         ict_max_notional: float = None, ict_max_loss_cap: float = None):
+        changes = []
+        # ── Genel ──
+        if max_open_trades is not None and max_open_trades > 0:
+            self.max_open_trades_limit = max_open_trades
+            changes.append(f"max_trades={max_open_trades}")
+        if balance is not None and balance > 0:
+            self.balance = balance
+            changes.append(f"balance=${balance:.2f}")
+
+        # ── BB MR ayarları ──
+        if max_notional is not None and max_notional > 0:
+            self._user_max_notional = max_notional
+            changes.append(f"bb_notional=${max_notional:.0f}")
+        if max_loss_cap is not None and max_loss_cap > 0:
+            self._user_max_loss_cap = max_loss_cap
+            changes.append(f"bb_max_loss=${max_loss_cap:.1f}")
+        if min_rr is not None and min_rr > 0:
+            self._BB_MR_PARAMS['min_rr'] = min_rr
+            changes.append(f"bb_RR={min_rr}:1")
+        if tp_min is not None and tp_min > 0:
+            self._BB_MR_PARAMS['tp_min'] = tp_min
+            changes.append(f"bb_TP={tp_min}x ATR")
+
+        # ── Strateji enable/disable ──
+        if bb_mr_enabled is not None:
+            self._strategy_enabled['bb_mr'] = bb_mr_enabled
+            changes.append(f"bb_mr={'ON' if bb_mr_enabled else 'OFF'}")
+        if ict_smc_enabled is not None:
+            self._strategy_enabled['ict_smc'] = ict_smc_enabled
+            changes.append(f"ict_smc={'ON' if ict_smc_enabled else 'OFF'}")
+
+        # ── ICT/SMC ayarları ──
+        if ict_min_confluence is not None and ict_min_confluence >= 0:
+            self._ICT_PARAMS['min_confluence'] = ict_min_confluence
+            changes.append(f"ict_conf={ict_min_confluence}")
+        if ict_min_rr is not None and ict_min_rr > 0:
+            self._ICT_PARAMS['min_rr'] = ict_min_rr
+            changes.append(f"ict_rr={ict_min_rr}")
+        if ict_max_sl_pct is not None and ict_max_sl_pct > 0:
+            self._ICT_PARAMS['max_sl_pct'] = ict_max_sl_pct
+            changes.append(f"ict_sl={ict_max_sl_pct}%")
+        if ict_require_sweep is not None:
+            self._ICT_PARAMS['require_sweep'] = ict_require_sweep
+            changes.append(f"ict_sweep={'ON' if ict_require_sweep else 'OFF'}")
+        if ict_require_displacement is not None:
+            self._ICT_PARAMS['require_displacement'] = ict_require_displacement
+            changes.append(f"ict_disp={'ON' if ict_require_displacement else 'OFF'}")
+        if ict_killzone_only is not None:
+            self._ICT_PARAMS['killzone_only'] = ict_killzone_only
+            changes.append(f"ict_kz={'ON' if ict_killzone_only else 'OFF'}")
+        if ict_max_notional is not None and ict_max_notional > 0:
+            self._ICT_PARAMS['max_notional'] = ict_max_notional
+            changes.append(f"ict_notional=${ict_max_notional:.0f}")
+        if ict_max_loss_cap is not None and ict_max_loss_cap > 0:
+            self._ICT_PARAMS['max_loss_cap'] = ict_max_loss_cap
+            changes.append(f"ict_max_loss=${ict_max_loss_cap:.1f}")
+
+        if not changes:
+            return {"success": False, "message": "No valid settings provided"}
         self._force_save()
-        self.log(f"[GEAR] Max open trades → {max_open_trades}")
-        return {"success": True, "message": "Settings updated"}
+        self.log(f"[GEAR] Settings updated: {', '.join(changes)}")
+        return {"success": True, "message": f"Updated: {', '.join(changes)}"}
+
+    def get_risk_settings(self):
+        return {
+            "max_open_trades": self.max_open_trades_limit,
+            "balance": round(self.balance, 2),
+            # VWAP Scalping (replaces BB MR)
+            "vwap_scalp_enabled": self._strategy_enabled.get('vwap_scalp', True),
+            "vwap_max_notional": self._VWAP_PARAMS.get('max_notional', 200.0),
+            "vwap_max_loss_cap": self._VWAP_PARAMS.get('max_loss_cap', 5.0),
+            "vwap_sl_pct": self._VWAP_PARAMS.get('sl_pct', 0.15),
+            "vwap_tp_pct": self._VWAP_PARAMS.get('tp_pct', 0.30),
+            "max_notional": getattr(self, '_user_max_notional', 150.0),
+            "max_loss_cap": getattr(self, '_user_max_loss_cap', 5.0),
+            # ICT/SMC
+            "ict_smc_enabled": self._strategy_enabled.get('ict_smc', True),
+            "ict_min_confluence": self._ICT_PARAMS.get('min_confluence', 2),
+            "ict_min_rr": self._ICT_PARAMS.get('min_rr', 2.0),
+            "ict_max_sl_pct": self._ICT_PARAMS.get('max_sl_pct', 2.5),
+            "ict_require_sweep": self._ICT_PARAMS.get('require_sweep', True),
+            "ict_require_displacement": self._ICT_PARAMS.get('require_displacement', False),
+            "ict_killzone_only": self._ICT_PARAMS.get('killzone_only', False),
+            "ict_max_notional": self._ICT_PARAMS.get('max_notional', 200.0),
+            "ict_max_loss_cap": self._ICT_PARAMS.get('max_loss_cap', 8.0),
+        }
+
+    def reset_system(self, new_balance: float = 10000.0):
+        was_running = self.is_running
+        if was_running:
+            self.stop()
+            time.sleep(2)
+        with self.trades_lock:
+            self.balance = new_balance
+            self.open_trades = []
+            self.pending_orders = []
+            self.closed_trades = []
+            self.trade_counter = 0
+            self.consecutive_losses = 0
+            self.symbol_consecutive_losses = {}
+            # BB MR reset
+            self._bb_consecutive_sl = 0
+            self._bb_cooldown_until = 0
+            self._bb_recent_outcomes = []
+            self._bb_last_trade_time = 0
+            self._bb_symbol_cooldown = {}
+            # ICT reset
+            self._ict_consecutive_sl = 0
+            self._ict_cooldown_until = 0
+            self._ict_last_trade_time = 0
+            self._ict_symbol_cooldown = {}
+            self._ict_recent_outcomes = []
+            self.logs = []
+        self._force_save()
+        self.log(f"[RESET] System reset. Balance: ${new_balance:.2f}")
+        return {"success": True, "message": f"System reset. Balance: ${new_balance:.2f}"}
+
+    def get_analytics(self):
+        with self.trades_lock:
+            all_closed = list(self.closed_trades)
+        result = []
+        for t in all_closed:
+            pnl = t.get('pnl', 0)
+            margin = t.get('original_margin', t.get('margin', 0))
+            pnl_pct = (pnl / margin * 100) if margin > 0 else 0
+            notional = t.get('entry_price', 0) * t.get('qty', 0)
+            result.append({
+                "id": t.get('id', ''),
+                "symbol": t.get('symbol', ''),
+                "side": t.get('side', ''),
+                "entry_price": t.get('entry_price', 0),
+                "exit_price": t.get('exit_price', 0),
+                "qty": t.get('qty', 0),
+                "margin": margin,
+                "notional": round(notional, 2),
+                "pnl": round(pnl, 2),
+                "pnl_pct": round(pnl_pct, 2),
+                "max_pnl_pct": round(t.get('max_pnl_pct', 0), 2),
+                "strategy": t.get('strategy', 'unknown'),
+                "entry_time": t.get('entry_time', ''),
+                "exit_time": t.get('exit_time', ''),
+                "reason": t.get('close_reason', t.get('reason', 'unknown')),
+                "killzone": t.get('killzone', ''),
+            })
+        return {"trades": result, "total": len(result)}

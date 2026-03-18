@@ -20,6 +20,7 @@ from ai.strategies import (
     ScalpingStrategy, Signal,
     ICTStrategy, SmartMoneyOrderFlowStrategy,
 )
+from ai.strategies.volatility_strategy import VolatilityStrategy
 
 
 @dataclass
@@ -56,11 +57,31 @@ class AdaptiveEngine:
         self.timeframe = primary_tf
         self.secondary_tf = secondary_tf
 
+        # Multi-Strategy Ensemble: her rejim için birden fazla strateji
+        self._all_strategies = {
+            'momentum': MomentumStrategy(),
+            'ict': ICTStrategy(),
+            'smart_money': SmartMoneyOrderFlowStrategy(),
+            'mean_reversion': MeanReversionStrategy(),
+            'scalping': ScalpingStrategy(),
+            'volatility': VolatilityStrategy(),
+        }
+
+        # Rejim başına strateji öncelik sırası (hepsi denenir, en iyi seçilir)
+        # v2.1: smart_money kaldırıldı (backtest'te -11% PnL, %40 WR)
+        self._regime_strategies = {
+            Regime.TRENDING:       ['momentum', 'ict'],
+            Regime.MEAN_REVERTING: ['mean_reversion', 'scalping'],
+            Regime.HIGH_VOLATILE:  ['ict', 'volatility'],
+            Regime.LOW_VOLATILE:   ['scalping', 'mean_reversion'],
+        }
+
+        # Backward compat: strategies dict (primary per regime)
         self.strategies = {
-            Regime.TRENDING: MomentumStrategy(),
-            Regime.MEAN_REVERTING: MeanReversionStrategy(),
-            Regime.HIGH_VOLATILE: ICTStrategy(),
-            Regime.LOW_VOLATILE: ScalpingStrategy(),
+            Regime.TRENDING: self._all_strategies['momentum'],
+            Regime.MEAN_REVERTING: self._all_strategies['mean_reversion'],
+            Regime.HIGH_VOLATILE: self._all_strategies['ict'],
+            Regime.LOW_VOLATILE: self._all_strategies['scalping'],
         }
 
         self._last_signal: Optional[Signal] = None
@@ -90,6 +111,8 @@ class AdaptiveEngine:
     def _process_signal_with_mtf(self, signal: Signal, df_4h: pd.DataFrame, symbol: str) -> Signal:
         """
         4h trend filtresini sinyale uygula (Phase 1).
+        Counter-trend sinyalleri bloklanır (allowed=False).
+        Bu filtre BTC/BNB/SOL gibi coinlerde kanıtlanmış şekilde çalışıyor.
         """
         if signal is None or signal.direction is None or df_4h is None:
             return signal
@@ -100,7 +123,7 @@ class AdaptiveEngine:
         if not adj.allowed:
             return Signal(None, 0.0, signal.strategy_name, "", f"MTF RED: {adj.reason}", hard_pass=False)
 
-        signal.soft_score += adj.score_modifier
+        signal.soft_score = min(5, signal.soft_score + adj.score_modifier)
         if signal.soft_score < 3:
             return Signal(None, 0.0, signal.strategy_name, "", f"MTF Score Low: {signal.soft_score} ({adj.reason})", hard_pass=False)
 
@@ -145,9 +168,8 @@ class AdaptiveEngine:
         if not strategy:
             return self._hold_decision(regime, "Strateji bulunamadı")
 
-        primary_signal = strategy.generate_signal(df)
-        if not primary_signal.is_valid:
-            primary_signal = self._try_secondary_strategy(df, regime)
+        # Multi-strategy ensemble: tüm uygun stratejileri dene, en iyisini seç
+        primary_signal = self._best_signal_ensemble(df, regime)
 
         # 3. MTF Filtrelemesi (4h trend yönü)
         if primary_signal.is_valid and df_4h is not None:
@@ -157,6 +179,23 @@ class AdaptiveEngine:
             self._debug_counts['no_signal'] += 1
             self._track_reason(f"{primary_signal.reason}_{rv}")
             return self._hold_decision(regime, f"Signal rejected ({primary_signal.reason})")
+
+        # 3b. 1h RSI Overbought/Oversold Guard
+        if 'rsi' in df.columns:
+            rsi_1h = float(df['rsi'].iloc[-1])
+            if not np.isnan(rsi_1h):
+                if primary_signal.direction == 'LONG' and rsi_1h > 70:
+                    self._debug_counts['no_signal'] += 1
+                    self._track_reason(f"rsi_overbought_{rv}")
+                    return self._hold_decision(
+                        regime, f"1h RSI overbought: {rsi_1h:.0f}>70 — LONG blocked"
+                    )
+                if primary_signal.direction == 'SHORT' and rsi_1h < 30:
+                    self._debug_counts['no_signal'] += 1
+                    self._track_reason(f"rsi_oversold_{rv}")
+                    return self._hold_decision(
+                        regime, f"1h RSI oversold: {rsi_1h:.0f}<30 — SHORT blocked"
+                    )
 
         # 4. Giriş Zamanlaması (15m/5m entry timing)
         if df_secondary is not None and len(df_secondary) >= 20:
@@ -173,14 +212,25 @@ class AdaptiveEngine:
                 )
             primary_signal.reason += f" | Entry: {entry_reason}"
 
+        # 4a. Giriş Lokasyonu Kalitesi (1h swing range + EMA proximity)
+        entry_type = _safe_signal_attr(primary_signal, 'entry_type', 'none')
+        loc_ok, loc_reason = self._check_entry_location(df, primary_signal.direction, entry_type)
+        if not loc_ok:
+            self._debug_counts['no_signal'] += 1
+            self._track_reason(f"entry_location_{rv}")
+            return self._hold_decision(regime, f"Entry location: {loc_reason}")
+        primary_signal.reason += f" | Loc: {loc_reason}"
+
         self._last_signal = primary_signal
 
         # 4b. HTF Feature Injection — Meta model için 6 HTF feature'ı df'e ekle
-        df = self._inject_htf_features(df, df_4h)
+        df = self._inject_htf_features(df, df_4h, symbol)
 
         # 5. Meta-Filter (Soft Scaling)
         # Hard gate SADECE çok düşük confidence'da → geri kalanı position size ile ölçekle
-        MINIMUM_META = 0.15  # Bu seviyenin altı = "neredeyse kesinlikle yanlış"
+        # Gate 2 (should_trade) kaldırıldı: threshold 0.64-0.65 her şeyi blokluyor,
+        # soft-scaling zaten düşük meta'lı sinyallere küçük pozisyon veriyor.
+        MINIMUM_META = 0.30
         meta_conf = primary_signal.confidence * 0.85
         if self.meta_predictor is not None:
             meta_conf, should_trade, threshold, meta_reason = self.meta_predictor.predict(
@@ -216,30 +266,36 @@ class AdaptiveEngine:
             sl_price=_safe_signal_attr(primary_signal, 'sl_price', 0.0),
         )
 
-    def _try_secondary_strategy(self, df: pd.DataFrame, primary_regime: Regime) -> Signal:
-        secondary_order = {
-            Regime.MEAN_REVERTING: [Regime.TRENDING, Regime.LOW_VOLATILE],
-            Regime.TRENDING: [Regime.HIGH_VOLATILE, Regime.MEAN_REVERTING],
-            Regime.HIGH_VOLATILE: [Regime.TRENDING, Regime.MEAN_REVERTING],
-            Regime.LOW_VOLATILE: [Regime.MEAN_REVERTING, Regime.TRENDING],
-        }
-        # Smart Money as additional secondary for trending/high_vol
-        smo = SmartMoneyOrderFlowStrategy()
-        if primary_regime in (Regime.TRENDING, Regime.HIGH_VOLATILE):
-            signal = smo.generate_signal(df)
-            if signal.is_valid:
-                signal.confidence *= 0.85
-                signal.strategy_name += "(secondary)"
-                return signal
-        for alt_regime in secondary_order.get(primary_regime, []):
-            alt_strategy = self.strategies.get(alt_regime)
-            if not alt_strategy: continue
-            signal = alt_strategy.generate_signal(df)
-            if signal.is_valid:
-                signal.confidence *= 0.8
-                signal.strategy_name += "(secondary)"
-                return signal
-        return Signal(None, 0.0, "none", primary_regime.value, "Tüm stratejiler reddedildi")
+    def _best_signal_ensemble(self, df: pd.DataFrame, regime: Regime) -> Signal:
+        """
+        Multi-Strategy Ensemble: Rejime uygun TÜM stratejileri dene,
+        en yüksek (soft_score * confidence) olan sinyali seç.
+        Eğer hiçbiri sinyal üretmezse, cross-regime stratejileri dene.
+        """
+        candidates = []
+
+        # 1. Rejime uygun stratejileri dene
+        strategy_names = self._regime_strategies.get(regime, [])
+        for sname in strategy_names:
+            strat = self._all_strategies.get(sname)
+            if not strat:
+                continue
+            try:
+                signal = strat.generate_signal(df)
+                if signal.is_valid:
+                    candidates.append(signal)
+            except Exception:
+                pass
+
+        # 2. v2.1: Cross-regime secondary kaldırıldı (backtest: %25 WR, -8.65% PnL)
+        #    Rejime uygun strateji sinyal vermezse → HOLD (daha iyi)
+
+        # 3. En iyi sinyali seç: soft_score * confidence
+        if candidates:
+            best = max(candidates, key=lambda s: (s.soft_score or 0) * s.confidence)
+            return best
+
+        return Signal(None, 0.0, "none", regime.value, "Tüm stratejiler reddedildi")
 
     def _check_entry_timing(
         self,
@@ -292,16 +348,16 @@ class AdaptiveEngine:
             # ── Regime-Aware RSI Limitleri ──
             regime_lower = regime.lower() if isinstance(regime, str) else str(regime).lower()
             if regime_lower == 'trending':
-                rsi_high, rsi_low = 88, 12
-                mom_limit = 3.5
-                body_check = False        # Trending'de zayıf mum kontrolü kapalı
-            elif regime_lower == 'mean_reverting':
-                rsi_high, rsi_low = 75, 25
+                rsi_high, rsi_low = 78, 22
                 mom_limit = 2.0
                 body_check = True
+            elif regime_lower == 'mean_reverting':
+                rsi_high, rsi_low = 72, 28
+                mom_limit = 1.5
+                body_check = True
             else:
-                rsi_high, rsi_low = 80, 20
-                mom_limit = 2.5
+                rsi_high, rsi_low = 75, 25
+                mom_limit = 2.0
                 body_check = True
 
             # ── MTF Override: Güçlü 4h trend → daha da gevşet ──
@@ -310,6 +366,41 @@ class AdaptiveEngine:
                 rsi_low = max(rsi_low - 4, 8)
                 mom_limit *= 1.5
 
+            # ── Ardışık mum kontrolü: son 5+ mum aynı yönde → tükenme riski ──
+            consec_bear = 0
+            consec_bull = 0
+            if len(close) >= 6:
+                for i in range(-1, -6, -1):
+                    if float(close.iloc[i]) < float(df_ltf['open'].iloc[i]):
+                        consec_bear += 1
+                    elif float(close.iloc[i]) > float(df_ltf['open'].iloc[i]):
+                        consec_bull += 1
+                    else:
+                        break
+
+            # ── 15m Yapısal Onay: HL/LH + EMA alignment ──
+            ema9 = close.ewm(span=9, adjust=False).mean()
+            ema21 = close.ewm(span=21, adjust=False).mean()
+            ema9_val = float(ema9.iloc[-1])
+            ema21_val = float(ema21.iloc[-1])
+            ema_bull = ema9_val > ema21_val
+            ema_bear = ema9_val < ema21_val
+
+            # Son 10 bar'da Higher Low / Lower High arama
+            has_hl = False  # Higher Low (bullish structure)
+            has_lh = False  # Lower High (bearish structure)
+            if len(low) >= 10:
+                lows_10 = [float(low.iloc[i]) for i in range(-10, 0)]
+                highs_10 = [float(high.iloc[i]) for i in range(-10, 0)]
+                # Son low > önceki minimum low = Higher Low
+                min_low_first_half = min(lows_10[:5]) if len(lows_10) >= 5 else lows_10[0]
+                min_low_second_half = min(lows_10[5:]) if len(lows_10) >= 5 else lows_10[-1]
+                has_hl = min_low_second_half > min_low_first_half
+                # Son high < önceki maximum high = Lower High
+                max_high_first_half = max(highs_10[:5]) if len(highs_10) >= 5 else highs_10[0]
+                max_high_second_half = max(highs_10[5:]) if len(highs_10) >= 5 else highs_10[-1]
+                has_lh = max_high_second_half < max_high_first_half
+
             if direction == 'LONG':
                 if rsi_val > rsi_high:
                     return False, f"RSI aşırı alınmış ({rsi_val:.0f}, limit={rsi_high})"
@@ -317,7 +408,14 @@ class AdaptiveEngine:
                     return False, f"Hareket kaçırılmış (mom={mom_3:.1f}%, limit={mom_limit:.1f}%)"
                 if body_check and body_ratio < 0.15 and rsi_val > 65:
                     return False, f"Zayıf mum + yüksek RSI"
-                return True, f"OK (rsi={rsi_val:.0f} mom={mom_3:.1f}% regime={regime_lower})"
+                if consec_bull >= 5:
+                    return False, f"5+ ardışık bull mum — tükenme (consec={consec_bull})"
+                # Yapısal onay: EMA bull veya Higher Low olmalı
+                struct_ok = ema_bull or has_hl
+                struct_tag = f"ema{'✓' if ema_bull else '✗'} hl{'✓' if has_hl else '✗'}"
+                if not struct_ok and regime_lower != 'mean_reverting':
+                    return False, f"15m yapı yok ({struct_tag} rsi={rsi_val:.0f})"
+                return True, f"OK (rsi={rsi_val:.0f} mom={mom_3:.1f}% {struct_tag})"
 
             elif direction == 'SHORT':
                 if rsi_val < rsi_low:
@@ -326,14 +424,112 @@ class AdaptiveEngine:
                     return False, f"Hareket kaçırılmış (mom={mom_3:.1f}%, limit={-mom_limit:.1f}%)"
                 if body_check and body_ratio < 0.15 and rsi_val < 35:
                     return False, f"Zayıf mum + düşük RSI"
-                return True, f"OK (rsi={rsi_val:.0f} mom={mom_3:.1f}% regime={regime_lower})"
+                if consec_bear >= 5:
+                    return False, f"5+ ardışık bear mum — tükenme (consec={consec_bear})"
+                # Yapısal onay: EMA bear veya Lower High olmalı
+                struct_ok = ema_bear or has_lh
+                struct_tag = f"ema{'✓' if ema_bear else '✗'} lh{'✓' if has_lh else '✗'}"
+                if not struct_ok and regime_lower != 'mean_reverting':
+                    return False, f"15m yapı yok ({struct_tag} rsi={rsi_val:.0f})"
+                return True, f"OK (rsi={rsi_val:.0f} mom={mom_3:.1f}% {struct_tag})"
 
             return True, "neutral"
 
         except Exception as e:
             return True, f"timing_error ({e})"
 
-    def _inject_htf_features(self, df: pd.DataFrame, df_4h: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+    def _check_entry_location(
+        self,
+        df: pd.DataFrame,
+        direction: str,
+        entry_type: str = "pullback",
+    ) -> Tuple[bool, str]:
+        """
+        Giriş Lokasyonu Kalite Kontrolü — Premium/Discount Zone
+
+        Pullback SHORT → fiyat range'in üst kısmında olmalı (premium zone)
+        Pullback LONG  → fiyat range'in alt kısmında olmalı (discount zone)
+
+        Kontroller:
+          1. Swing range pozisyonu (son 20 bar high/low)
+          2. EMA21 mesafesi (pullback kalitesi)
+          3. Swing low/high'a ATR-bazlı yakınlık
+        """
+        try:
+            lookback = min(20, len(df) - 1)
+            if lookback < 10:
+                return True, "insufficient_data"
+
+            recent = df.iloc[-lookback:]
+            swing_high = float(recent['high'].max())
+            swing_low = float(recent['low'].min())
+            cp = float(df['close'].iloc[-1])
+
+            swing_range = swing_high - swing_low
+            if swing_range <= 0 or swing_range / cp < 0.005:
+                return True, "flat_range"
+
+            # 0.0 = dip, 1.0 = tepe
+            pos = (cp - swing_low) / swing_range
+
+            atr = float(df['atr'].iloc[-1]) if 'atr' in df.columns else cp * 0.01
+
+            # EMA21 mesafesi
+            ema21 = float(df['ema21'].iloc[-1]) if 'ema21' in df.columns else cp
+            ema_dist_pct = (cp - ema21) / ema21 * 100 if ema21 > 0 else 0.0
+
+            info = f"pos={pos:.0%} ema21={ema_dist_pct:+.1f}%"
+
+            is_pullback = entry_type in ('pullback', 'none')
+
+            if direction == 'SHORT':
+                if is_pullback:
+                    # Destek dibine short yasak — alt %35
+                    if pos < 0.35:
+                        return False, f"Discount zone SHORT ({info})"
+                    # EMA21'in çok altında = hareket kaçırılmış
+                    if ema_dist_pct < -1.5:
+                        return False, f"EMA21 altı uzama ({info})"
+                    # Swing low'a çok yakın
+                    if (cp - swing_low) < 0.7 * atr:
+                        return False, f"Swing low'a çok yakın ({info})"
+                else:  # breakout, ict_setup, smart_money
+                    # Aşırı uzama kontrolü (gevşek)
+                    if ema_dist_pct < -3.0:
+                        return False, f"Breakout aşırı uzama ({info})"
+                    # Range'in en dibinde bile olmamalı
+                    if pos < 0.20:
+                        return False, f"Dip bölgesinde SHORT ({info})"
+                    # Yükselen tepe koruması: range tepesi + EMA üstü
+                    if pos > 0.80 and ema_dist_pct > 0.8:
+                        return False, f"Yükselen tepe SHORT ({info})"
+
+            elif direction == 'LONG':
+                if is_pullback:
+                    # Direnç tepesine long yasak — üst %35
+                    if pos > 0.65:
+                        return False, f"Premium zone LONG ({info})"
+                    # EMA21'in çok üstünde = hareket kaçırılmış
+                    if ema_dist_pct > 1.5:
+                        return False, f"EMA21 üstü uzama ({info})"
+                    # Swing high'a çok yakın
+                    if (swing_high - cp) < 0.7 * atr:
+                        return False, f"Swing high'a çok yakın ({info})"
+                else:  # breakout, ict_setup, smart_money
+                    if ema_dist_pct > 3.0:
+                        return False, f"Breakout aşırı uzama ({info})"
+                    if pos > 0.80:
+                        return False, f"Tepe bölgesinde LONG ({info})"
+                    # Düşen bıçak koruması: range dibi + EMA altı
+                    if pos < 0.20 and ema_dist_pct < -0.8:
+                        return False, f"Düşen bıçak LONG ({info})"
+
+            return True, f"OK ({info})"
+
+        except Exception as e:
+            return True, f"location_error ({e})"
+
+    def _inject_htf_features(self, df: pd.DataFrame, df_4h: Optional[pd.DataFrame] = None, symbol: str = "UNKNOWN") -> pd.DataFrame:
         """
         4h verisinden 6 HTF feature hesapla ve df'in son satırına ekle.
         Meta model bu feature'lara ihtiyaç duyar.
@@ -345,7 +541,7 @@ class AdaptiveEngine:
             if df_4h is not None and len(df_4h) >= 30:
                 cp = float(df['close'].iloc[-1])
                 atr_val = float(df['atr'].iloc[-1]) if 'atr' in df.columns else cp * 0.01
-                ctx = self.mtf_analyzer.analyze_htf(df_4h, "")
+                ctx = self.mtf_analyzer.analyze_htf(df_4h, symbol)
                 htf_feats = self.mtf_analyzer.generate_cross_tf_features(ctx, cp, atr_val)
             else:
                 htf_feats = {
@@ -371,7 +567,14 @@ class AdaptiveEngine:
           meta_conf >= 0.15 → minimum (0.20)
           meta_conf <  0.15 → zero (hard reject)
         """
-        score_mult = {5: 1.0, 4: 0.75, 3: 0.50}.get(soft_score, 0.0)
+        if soft_score >= 5:
+            score_mult = 1.0
+        elif soft_score == 4:
+            score_mult = 0.75
+        elif soft_score == 3:
+            score_mult = 0.50
+        else:
+            score_mult = 0.0
 
         if meta_conf >= 0.55:
             meta_mult = 1.0
@@ -442,14 +645,15 @@ class AdaptiveEngine:
             "hurst": round(float(df['hurst'].iloc[-1]), 3) if 'hurst' in df.columns else None,
         })
 
-        # ── Step 2: Primary Strategy ──
-        strategy = self.strategies.get(regime)
-        strategy_name = type(strategy).__name__ if strategy else "None"
-        primary_signal = strategy.generate_signal(df) if strategy else None
+        # ── Step 2: Multi-Strategy Ensemble ──
+        primary_signal = self._best_signal_ensemble(df, regime)
 
+        # Show which strategies were tried
+        tried_strategies = self._regime_strategies.get(regime, [])
         if primary_signal and primary_signal.is_valid:
-            step("2_primary_strategy", "✅", {
-                "strategy": strategy_name,
+            step("2_strategy_ensemble", "✅", {
+                "tried": tried_strategies,
+                "selected": primary_signal.strategy_name,
                 "direction": primary_signal.direction,
                 "confidence": round(primary_signal.confidence, 3),
                 "soft_score": _safe_signal_attr(primary_signal, 'soft_score', 0),
@@ -459,28 +663,13 @@ class AdaptiveEngine:
                 "reason": primary_signal.reason[:120],
             })
         else:
-            step("2_primary_strategy", "⚠️ NO SIGNAL", {
-                "strategy": strategy_name,
+            step("2_strategy_ensemble", "❌ NO SIGNAL", {
+                "tried": tried_strategies,
                 "reason": primary_signal.reason[:120] if primary_signal else "no strategy",
             })
-            # Try secondary
-            secondary_signal = self._try_secondary_strategy(df, regime)
-            if secondary_signal.is_valid:
-                primary_signal = secondary_signal
-                step("2b_secondary_strategy", "✅", {
-                    "strategy": primary_signal.strategy_name,
-                    "direction": primary_signal.direction,
-                    "confidence": round(primary_signal.confidence, 3),
-                    "soft_score": _safe_signal_attr(primary_signal, 'soft_score', 0),
-                    "reason": primary_signal.reason[:120],
-                })
-            else:
-                step("2b_secondary_strategy", "❌ REJECTED", {
-                    "reason": "Tüm stratejiler reddedildi"
-                })
-                trace["final_action"] = "HOLD"
-                trace["hold_reason"] = "No strategy signal"
-                return trace
+            trace["final_action"] = "HOLD"
+            trace["hold_reason"] = "No strategy signal"
+            return trace
 
         # ── Step 3: MTF Filter (4h Trend) ──
         if df_4h is not None:
@@ -556,8 +745,25 @@ class AdaptiveEngine:
                 "reason": f"15m verisi yok veya yetersiz ({len(df_secondary) if df_secondary is not None else 0} bars)"
             })
 
+        # ── Step 4a: Entry Location Quality ──
+        entry_type = _safe_signal_attr(primary_signal, 'entry_type', 'none')
+        loc_ok, loc_reason = self._check_entry_location(df, primary_signal.direction, entry_type)
+        if loc_ok:
+            step("4a_entry_location", "✅", {
+                "entry_type": entry_type,
+                "result": loc_reason,
+            })
+        else:
+            step("4a_entry_location", "❌ REJECTED", {
+                "entry_type": entry_type,
+                "result": loc_reason,
+            })
+            trace["final_action"] = "HOLD"
+            trace["hold_reason"] = f"Entry location: {loc_reason}"
+            return trace
+
         # ── Step 4c: HTF Feature Injection ──
-        df = self._inject_htf_features(df, df_4h)
+        df = self._inject_htf_features(df, df_4h, symbol)
 
         # ── Step 5: Meta Filter ──
         meta_conf = primary_signal.confidence * 0.85
@@ -652,8 +858,8 @@ class AdaptiveEngine:
             quality_issues.append(f"soft_score={sig_score} < 3")
         if meta_conf <= 0:
             quality_issues.append(f"meta_confidence={meta_conf:.3f} <= 0")
-        if final_confidence < 0.60:
-            quality_issues.append(f"confidence={final_confidence:.3f} < 0.60")
+        if final_confidence < 0.40:
+            quality_issues.append(f"confidence={final_confidence:.3f} < 0.40")
 
         if quality_issues:
             step("7_quality_gate", "❌ WOULD BE BLOCKED", {

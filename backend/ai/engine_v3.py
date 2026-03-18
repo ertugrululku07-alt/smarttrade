@@ -3,6 +3,12 @@ import numpy as np
 import datetime
 import os
 
+# ════════════════════════════════════════════════════════════
+# HybridTradingEngineV31 + TradeLogger: DEPRECATED
+# Sadece PositionManagerV3 aktif kullanılıyor.
+# BB MR ve ICT stratejileri kendi exit logic'lerini kullanır.
+# ════════════════════════════════════════════════════════════
+
 class TradeLogger:
     def __init__(self, path="trade_logs.csv"):
         self.path = path
@@ -97,56 +103,147 @@ class TradeLogger:
             pass
 
 class PositionManagerV3:
-    def __init__(self, trade_data, atr):
+    """
+    Kâr Koruma v3.3 — Balanced R:R System
+
+    v3.2 Sorunu: PeakDD küçük peak'lerde erken çıkış → avg win $3, avg loss $14
+    = 1:4.7 R:R → kasa eritiyor.
+
+    v3.3 Çözümü:
+    1. MaxLoss sıkılaştı: -%3.5 (kayıpları küçült)
+    2. PeakDD sadece büyük peak'ler: peak > +6% ve %50 drawdown
+    3. Trailing geniş başlar, giderek sıkılaşır (kazançları büyüt)
+    4. Breakeven erken: +1.5% ROI
+
+    Stage 0: İlk SL aktif
+    Stage 1: 0.3R VEYA +1.5% ROI → Breakeven
+    Stage 2: 0.8R VEYA +3% ROI → %20 partial + geniş trailing (1.5 ATR)
+    Stage 3: 1.5R VEYA +5% ROI → %20 partial + normal trailing (1.0 ATR)
+    Stage 4: 2.5R VEYA +8% ROI → %20 partial + sıkı trailing (0.5 ATR)
+
+    Hedef: avg win ~$5-7, avg loss ~$4-5 → R:R ~1.2:1
+    """
+
+    # ROI% eşikleri (leverage dahil) — v3.4 tight SL
+    ROI_STAGE1 = 1.0     # +1.0% ROI → breakeven (hızlı koruma)
+    ROI_STAGE2 = 2.0     # +2% ROI → partial + wide trail
+    ROI_STAGE3 = 4.0     # +4% ROI → partial + normal trail
+    ROI_STAGE4 = 7.0     # +7% ROI → partial + tight trail
+    MAX_LOSS_ROI = -2.0   # -%2.0 ROI → force exit (sıkı kayıp kontrolü)
+    PEAK_DD_MIN = 4.0     # PeakDD sadece peak > +4% olunca aktif
+    PEAK_DRAWDOWN = 0.50  # Kâr zirvesinden %50 geri çekilme → exit
+
+    def __init__(self, trade_data, atr, leverage=10):
         self.entry = trade_data.get('entry', trade_data.get('entry_price'))
         self.stop = trade_data.get('stop', trade_data.get('sl_price', self.entry))
         self.side = trade_data['side']
-        
+        self.leverage = leverage
+
         if self.entry is None:
-            # Emergency fallback: use current price from context if possible
-            # But normally entry should be present.
             raise ValueError(f"PositionManagerV3: No entry price found in trade_data keys: {list(trade_data.keys())}")
-            
+
         self.risk = max(abs(self.entry - self.stop), 0.000001)
         self.atr = atr
-        self.stage = 0 
-        self.highest_seen = self.entry
+        self.stage = 0
+        self.peak_price = self.entry  # LONG: en yüksek, SHORT: en düşük
         self.trailing_stop = None
+        self.peak_roi = 0.0
+
+    def _roi_pct(self, current_price):
+        """Kaldıraçlı ROI% hesapla."""
+        if self.side == 'LONG':
+            return ((current_price - self.entry) / self.entry) * self.leverage * 100
+        else:
+            return ((self.entry - current_price) / self.entry) * self.leverage * 100
+
+    def _trail_distance(self):
+        """Stage'e göre trailing — geniş başla, kârla sıkılaştır."""
+        if self.stage >= 4:
+            return 0.5 * self.atr   # sıkı — kârı kilitle
+        elif self.stage >= 3:
+            return 1.0 * self.atr   # normal
+        elif self.stage >= 2:
+            return 1.5 * self.atr   # geniş — nefes aldır
+        return 2.0 * self.atr       # fallback
+
+    def _move_stop(self, new_stop):
+        """Stop'u sadece kâr yönüne taşı."""
+        if self.side == 'LONG':
+            self.trailing_stop = max(self.trailing_stop or 0, new_stop)
+        else:
+            self.trailing_stop = min(self.trailing_stop or 999999, new_stop)
+
+    def _hit_stage(self, r_mult, roi_pct, r_threshold, roi_threshold):
+        """Hybrid check: R-mult VEYA ROI% eşiği aşıldı mı?"""
+        return r_mult >= r_threshold or roi_pct >= roi_threshold
 
     def update(self, current_price):
-        # Peak takibi
         if self.side == 'LONG':
-            self.highest_seen = max(self.highest_seen, current_price)
+            self.peak_price = max(self.peak_price, current_price)
             r_mult = (current_price - self.entry) / self.risk
         else:
-            self.highest_seen = min(self.highest_seen, current_price)
+            self.peak_price = min(self.peak_price, current_price)
             r_mult = (self.entry - current_price) / self.risk
 
-        # 1. Breakeven / Trailing
-        if r_mult >= 1.0 and self.stage == 0:
+        roi_pct = self._roi_pct(current_price)
+        self.peak_roi = max(self.peak_roi, roi_pct)
+
+        # ── MAX LOSS: -%3.5 ROI → force exit ──
+        if roi_pct <= self.MAX_LOSS_ROI:
+            return {'action': 'EXIT', 'reason': f'MaxLoss {roi_pct:.1f}%'}
+
+        # ── PEAK DRAWDOWN: sadece büyük peak'ler (>6%) için ──
+        if self.peak_roi >= self.PEAK_DD_MIN and roi_pct > 0:
+            drawdown_from_peak = (self.peak_roi - roi_pct) / self.peak_roi
+            if drawdown_from_peak >= self.PEAK_DRAWDOWN:
+                return {'action': 'EXIT', 'reason': f'PeakDD {self.peak_roi:.1f}%→{roi_pct:.1f}%'}
+
+        # ── Stage 1: Breakeven ──
+        if self._hit_stage(r_mult, roi_pct, 0.3, self.ROI_STAGE1) and self.stage == 0:
             self.stage = 1
             self.stop = self.entry
-            return {'action': 'PARTIAL', 'amount': 0.25, 'stop': self.stop, 'reason': 'TP1_BE'}
+            return {'action': 'UPDATE_STOP', 'stop': self.stop,
+                    'reason': f'BE R={r_mult:.2f} ROI={roi_pct:.1f}%'}
 
-        # 3. TP2: 2R -> Trailing Start
-        if r_mult >= 2.0 and self.stage == 1:
+        # ── Stage 2: Partial %20 + Geniş Trailing ──
+        if self._hit_stage(r_mult, roi_pct, 0.8, self.ROI_STAGE2) and self.stage <= 1:
             self.stage = 2
-            self.trailing_stop = self.entry + (self.risk if self.side == 'LONG' else -self.risk)
-            return {'action': 'PARTIAL', 'amount': 0.25, 'stop': self.trailing_stop, 'reason': 'TP2_TRAIL'}
+            trail_dist = self._trail_distance()
+            if self.side == 'LONG':
+                self.trailing_stop = max(self.entry, self.peak_price - trail_dist)
+            else:
+                self.trailing_stop = min(self.entry, self.peak_price + trail_dist)
+            return {'action': 'PARTIAL', 'amount': 0.20, 'stop': self.trailing_stop,
+                    'reason': f'TP1 R={r_mult:.2f} ROI={roi_pct:.1f}%'}
 
-        # 4. Trailing Update
-        if self.stage == 2:
-            new_trail = self.highest_seen - (1.5 * self.atr) if self.side == 'LONG' else self.highest_seen + (1.5 * self.atr)
+        # ── Stage 3: Partial %20 + Normal Trailing ──
+        if self._hit_stage(r_mult, roi_pct, 1.5, self.ROI_STAGE3) and self.stage == 2:
+            self.stage = 3
+            trail_dist = self._trail_distance()
+            new_trail = self.peak_price - trail_dist if self.side == 'LONG' else self.peak_price + trail_dist
+            self._move_stop(new_trail)
+            return {'action': 'PARTIAL', 'amount': 0.20, 'stop': self.trailing_stop,
+                    'reason': f'TP2 R={r_mult:.2f} ROI={roi_pct:.1f}%'}
+
+        # ── Stage 4: Partial %20 + Sıkı Trailing ──
+        if self._hit_stage(r_mult, roi_pct, 2.5, self.ROI_STAGE4) and self.stage == 3:
+            self.stage = 4
+            trail_dist = self._trail_distance()
+            new_trail = self.peak_price - trail_dist if self.side == 'LONG' else self.peak_price + trail_dist
+            self._move_stop(new_trail)
+            return {'action': 'PARTIAL', 'amount': 0.20, 'stop': self.trailing_stop,
+                    'reason': f'TP3 R={r_mult:.2f} ROI={roi_pct:.1f}%'}
+
+        # ── Trailing Update (stage >= 2) ──
+        if self.stage >= 2 and self.trailing_stop is not None:
+            trail_dist = self._trail_distance()
+            new_trail = self.peak_price - trail_dist if self.side == 'LONG' else self.peak_price + trail_dist
             old_trail = self.trailing_stop
-            if self.side == 'LONG': 
-                self.trailing_stop = max(self.trailing_stop or 0, new_trail)
-            else: 
-                self.trailing_stop = min(self.trailing_stop or 999999, new_trail)
-            
+            self._move_stop(new_trail)
             if self.trailing_stop != old_trail:
                 return {'action': 'UPDATE_STOP', 'stop': self.trailing_stop}
 
-        # 5. Exit Check
+        # ── Exit Check ──
         active_stop = self.trailing_stop if self.trailing_stop else self.stop
         if (self.side == 'LONG' and current_price <= active_stop) or \
            (self.side == 'SHORT' and current_price >= active_stop):

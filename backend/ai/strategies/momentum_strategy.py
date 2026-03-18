@@ -74,8 +74,29 @@ class MomentumStrategy(BaseStrategy):
         # H3: Breakout veya Pullback tespit (çift yönlü)
         is_breakout_bull = (c > prev['high']) and (vol > vol_ma * 1.2)
         is_breakout_bear = (c < prev['low']) and (vol > vol_ma * 1.2)
-        is_pullback_bull = (c > ema50) and (lo <= ema9 * 1.01)
-        is_pullback_bear = (c < ema50) and (h >= ema9 * 0.99)
+
+        # Pullback kalite kontrolü: EMA retest + range pozisyonu
+        # Son 10 bar swing range'de pozisyon (0=dip, 1=tepe)
+        recent_10 = df.iloc[-10:]
+        r10_high = float(recent_10['high'].max())
+        r10_low = float(recent_10['low'].min())
+        r10_range = r10_high - r10_low if r10_high > r10_low else atr
+        range_pos = (c - r10_low) / r10_range if r10_range > 0 else 0.5
+
+        # Son 3 bar'da EMA21'e dokunma kontrolü (gerçek retest)
+        ema21_touch_bull = any(float(df['low'].iloc[i]) <= ema21 * 1.005 for i in range(-3, 0))
+        ema21_touch_bear = any(float(df['high'].iloc[i]) >= ema21 * 0.995 for i in range(-3, 0))
+
+        # Bull pullback: EMA retest + range alt yarısında
+        is_pullback_bull = (c > ema50) and (
+            (ema21_touch_bull and range_pos < 0.55) or
+            (lo <= ema9 * 1.01 and range_pos < 0.45)
+        )
+        # Bear pullback: EMA retest + range üst yarısında
+        is_pullback_bear = (c < ema50) and (
+            (ema21_touch_bear and range_pos > 0.45) or
+            (h >= ema9 * 0.99 and range_pos > 0.55)
+        )
 
         has_bull_setup = is_breakout_bull or is_pullback_bull
         has_bear_setup = is_breakout_bear or is_pullback_bear

@@ -1,25 +1,26 @@
 """
-ICT/SMC Strategy v2.2.1 — Production-Ready (Bugfix)
+ICT/SMC Strategy v3.0 — Professional ICT Setup
 
 Rejimler: TRENDING, HIGH_VOLATILE
 Mantık:
   1. Gelişmiş MSS — swing yapısı kırılma + displacement onayı
   2. Likidite Sweep — wick süpürme + gövde rejection
-  3. FVG — unmitigated gap + minimum boyut filtresi
+  3. FVG — unmitigated gap + minimum boyut filtresi + retest giriş
   4. OB — unmitigated order block + mesafe filtresi
   5. Killzone — saat + volatilite çift onay
+  6. Equal High/Low — likidite kümesi tespiti (2+ swing aynı seviye)
+  7. Sıralı Setup — EqHL → Sweep → MSS → FVG Retest (kronolojik)
+  8. Yapısal TP — Equal Level'lar hedef olarak kullanılır
 
-v2.2.1 Bugfix (v2.2 üzerine):
-  - ✅ #1  FVG NaN/None → safe bool check
-  - ✅ #2  OB bare except → typed exception
-  - ✅ #3  Killzone vol atlanma düzeltildi
-  - ✅ #4  Confluence çelişki reason korunuyor
-  - ✅ #5  Sweep self-reference edge case
-  - ✅ #6  TP yuvarlama yönü düzeltildi (SL ile ZIT)
-  - ✅ #7  Variable shadow düzeltildi
-  - ✅ #8  MSS swing sıralama koruması
-  - ✅ #9  TP NaN koruması güçlendirildi
-  - ✅ #10 Çelişki mesajı iyileştirildi
+v3.0 (v2.2.1 üzerine):
+  - ✅ Equal High/Low tespiti (_detect_equal_levels)
+  - ✅ FVG Zone tespiti + Retest kontrolü (_find_fvg_zones, _check_fvg_retest)
+  - ✅ Sıralı ICT Setup doğrulaması (_check_sequential_setup)
+  - ✅ Equal Level bazlı TP hedefleri (_calculate_tp)
+  - ✅ Confluence'a EqHL scoring eklendi
+
+v2.2.1 Bugfix:
+  - ✅ #1-#10 tüm bugfix'ler korunuyor
 """
 
 import math
@@ -52,6 +53,26 @@ class LiquiditySweep:
     direction: str          # 'bullish_sweep' | 'bearish_sweep'
     strength: float         # ATR cinsinden wick gücü
     bar_index: int
+
+
+@dataclass
+class EqualLevel:
+    """Equal High/Low — aynı seviyede 2+ swing = likidite kümesi."""
+    level: float          # Kümenin ortalama fiyatı
+    touches: int          # Kaç kez dokunulmuş
+    is_high: bool         # True = equal highs, False = equal lows
+    first_index: int      # İlk dokunma bar indexi
+    last_index: int       # Son dokunma bar indexi
+
+
+@dataclass
+class FVGZone:
+    """Fair Value Gap bölgesi detayları."""
+    top: float            # Gap üst sınırı
+    bottom: float         # Gap alt sınırı
+    is_bull: bool         # True = bullish FVG
+    bar_index: int        # FVG oluşum bar indexi
+    size_atr: float       # Gap büyüklüğü (ATR cinsinden)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -91,6 +112,14 @@ class ICTStrategy(BaseStrategy):
     # ── OB ────────────────────────────────────────────
     OB_MAX_AGE = 25
     OB_MAX_DISTANCE_ATR = 8.0
+
+    # ── Equal Level ──────────────────────────────────
+    EQ_TOLERANCE_ATR = 0.25       # Aynı seviye sayılma toleransı
+    EQ_MIN_TOUCHES = 2            # Minimum dokunma sayısı
+    EQ_SCAN_BARS = 10             # FVG zone tarama derinliği
+
+    # ── FVG Retest ───────────────────────────────────
+    FVG_RETEST_PROXIMITY_ATR = 0.4  # Retest yakınlık toleransı
 
     # ── Confluence ────────────────────────────────────
     MIN_CONFLUENCE_SCORE = 4
@@ -209,17 +238,36 @@ class ICTStrategy(BaseStrategy):
         mss = self._detect_mss(df, swings, atr)
         sweep = self._detect_liquidity_sweep(df, swings, atr)
 
+        # Equal High/Low — likidite kümeleri
+        eq_highs, eq_lows = self._detect_equal_levels(swings, atr)
+
+        # FVG zones — raw OHLC'den
+        bull_fvg_zones, bear_fvg_zones = self._find_fvg_zones(df, atr)
+
         fvg_bull = self._check_unmitigated_fvg(
             df, 'fvg_bull', atr
         )
         fvg_bear = self._check_unmitigated_fvg(
             df, 'fvg_bear', atr
         )
+        # FVG zone'lardan da bool türet (col yoksa yedek)
+        if not fvg_bull and bull_fvg_zones:
+            fvg_bull = True
+        if not fvg_bear and bear_fvg_zones:
+            fvg_bear = True
 
         ob_bull = self._get_unmitigated_ob(df, 'ob_bull', c, atr)
         ob_bear = self._get_unmitigated_ob(df, 'ob_bear', c, atr)
 
         is_killzone = self._check_killzone(current_hour, df, atr)
+
+        # ── Sıralı ICT Setup ──
+        seq_l, seq_s, seq_l_reasons, seq_s_reasons = (
+            self._check_sequential_setup(
+                eq_highs, eq_lows, sweep, mss,
+                bull_fvg_zones, bear_fvg_zones, c, atr,
+            )
+        )
 
         # ── Confluence ──
         score, direction, reasons = self._calculate_confluence(
@@ -227,7 +275,16 @@ class ICTStrategy(BaseStrategy):
             fvg_bull=fvg_bull, fvg_bear=fvg_bear,
             ob_bull=ob_bull, ob_bear=ob_bear,
             is_killzone=is_killzone,
+            eq_highs=eq_highs, eq_lows=eq_lows,
         )
+
+        # Sıralı setup bonusu ekle
+        if direction == 'LONG' and seq_l > 0:
+            score += seq_l
+            reasons.extend(seq_l_reasons)
+        elif direction == 'SHORT' and seq_s > 0:
+            score += seq_s
+            reasons.extend(seq_s_reasons)
 
         if direction is None or score < self.MIN_CONFLUENCE_SCORE:
             reason_str = (
@@ -241,7 +298,9 @@ class ICTStrategy(BaseStrategy):
         sl_raw = self._calculate_sl(
             direction, c, atr, sweep, ob_bull, ob_bear
         )
-        tp_raw = self._calculate_tp(direction, c, atr, df)
+        tp_raw = self._calculate_tp(
+            direction, c, atr, df, eq_highs, eq_lows
+        )
 
         sl_valid, tp_valid = self._validate_sl_tp(
             direction, c, atr, sl_raw, tp_raw
@@ -399,6 +458,69 @@ class ICTStrategy(BaseStrategy):
                     break
 
         return strength
+
+    # ══════════════════════════════════════════════════════════
+    # EQUAL HIGH / EQUAL LOW TESPİTİ
+    # ══════════════════════════════════════════════════════════
+
+    def _detect_equal_levels(
+        self,
+        swings: List[SwingPoint],
+        atr: float,
+    ) -> Tuple[List[EqualLevel], List[EqualLevel]]:
+        """
+        Equal High/Low tespiti — aynı seviyede 2+ swing = likidite kümesi.
+
+        Traderların stopları bu seviyelerde birikir.
+        Fiyat bu seviyeleri sweep ettiğinde likidite alınır.
+
+        Returns:
+            (equal_highs, equal_lows)
+        """
+        if atr < 1e-10 or len(swings) < 2:
+            return [], []
+
+        tolerance = atr * self.EQ_TOLERANCE_ATR
+
+        highs = sorted(
+            [s for s in swings if s.is_high], key=lambda s: s.index
+        )
+        lows = sorted(
+            [s for s in swings if not s.is_high], key=lambda s: s.index
+        )
+
+        def cluster(points: List[SwingPoint], is_high: bool) -> List[EqualLevel]:
+            if len(points) < self.EQ_MIN_TOUCHES:
+                return []
+
+            clusters: List[EqualLevel] = []
+            used: set = set()
+
+            for i, p1 in enumerate(points):
+                if i in used:
+                    continue
+                group = [p1]
+                for j in range(i + 1, len(points)):
+                    if j in used:
+                        continue
+                    if abs(p1.price - points[j].price) <= tolerance:
+                        group.append(points[j])
+                        used.add(j)
+
+                if len(group) >= self.EQ_MIN_TOUCHES:
+                    used.add(i)
+                    avg = sum(s.price for s in group) / len(group)
+                    clusters.append(EqualLevel(
+                        level=avg,
+                        touches=len(group),
+                        is_high=is_high,
+                        first_index=min(s.index for s in group),
+                        last_index=max(s.index for s in group),
+                    ))
+
+            return clusters
+
+        return cluster(highs, True), cluster(lows, False)
 
     # ══════════════════════════════════════════════════════════
     # MSS  [FIX #8]
@@ -630,6 +752,104 @@ class ICTStrategy(BaseStrategy):
         return False
 
     # ══════════════════════════════════════════════════════════
+    # FVG ZONE TESPİTİ + RETEST KONTROLÜ
+    # ══════════════════════════════════════════════════════════
+
+    def _find_fvg_zones(
+        self,
+        df: pd.DataFrame,
+        atr: float,
+    ) -> Tuple[List[FVGZone], List[FVGZone]]:
+        """
+        Raw OHLC'den unmitigated FVG bölgelerini tespit et.
+
+        Bullish FVG: bar[i] low > bar[i-2] high (yukarı gap)
+        Bearish FVG: bar[i] high < bar[i-2] low (aşağı gap)
+
+        Returns:
+            (bull_fvg_zones, bear_fvg_zones)
+        """
+        bull_zones: List[FVGZone] = []
+        bear_zones: List[FVGZone] = []
+
+        if atr < 1e-10:
+            return bull_zones, bear_zones
+
+        total = len(df)
+        scan_start = max(2, total - self.EQ_SCAN_BARS)
+        highs = df['high'].values
+        lows = df['low'].values
+
+        for i in range(scan_start, total):
+            # ── Bullish FVG ──
+            gap_bottom_b = float(highs[i - 2])
+            gap_top_b = float(lows[i])
+            bull_gap = gap_top_b - gap_bottom_b
+
+            if bull_gap > atr * self.FVG_MIN_GAP_ATR:
+                mitigated = False
+                for j in range(i + 1, total):
+                    if float(lows[j]) <= gap_bottom_b:
+                        mitigated = True
+                        break
+                if not mitigated:
+                    bull_zones.append(FVGZone(
+                        top=gap_top_b,
+                        bottom=gap_bottom_b,
+                        is_bull=True,
+                        bar_index=i,
+                        size_atr=round(bull_gap / atr, 2),
+                    ))
+
+            # ── Bearish FVG ──
+            gap_top_s = float(lows[i - 2])
+            gap_bottom_s = float(highs[i])
+            bear_gap = gap_top_s - gap_bottom_s
+
+            if bear_gap > atr * self.FVG_MIN_GAP_ATR:
+                mitigated = False
+                for j in range(i + 1, total):
+                    if float(highs[j]) >= gap_top_s:
+                        mitigated = True
+                        break
+                if not mitigated:
+                    bear_zones.append(FVGZone(
+                        top=gap_top_s,
+                        bottom=gap_bottom_s,
+                        is_bull=False,
+                        bar_index=i,
+                        size_atr=round(bear_gap / atr, 2),
+                    ))
+
+        return bull_zones, bear_zones
+
+    def _check_fvg_retest(
+        self,
+        current_price: float,
+        fvg_zones: List[FVGZone],
+        atr: float,
+    ) -> Tuple[bool, Optional[FVGZone]]:
+        """
+        Fiyatın FVG zone'a geri dönüp dönmediğini kontrol et.
+
+        Entry burada yapılır — sweep ve MSS sonrası oluşan FVG'ye
+        geri dönüş en kaliteli giriş noktasıdır.
+
+        Returns:
+            (is_at_retest, zone)
+        """
+        if not fvg_zones or atr < 1e-10:
+            return False, None
+
+        proximity = atr * self.FVG_RETEST_PROXIMITY_ATR
+
+        for zone in reversed(fvg_zones):
+            if (zone.bottom - proximity) <= current_price <= (zone.top + proximity):
+                return True, zone
+
+        return False, None
+
+    # ══════════════════════════════════════════════════════════
     # ORDER BLOCK  [FIX #2]
     # ══════════════════════════════════════════════════════════
 
@@ -673,6 +893,98 @@ class ICTStrategy(BaseStrategy):
 
         except (IndexError, KeyError, TypeError, ValueError):
             return None
+
+    # ══════════════════════════════════════════════════════════
+    # SIRASAL ICT SETUP DOĞRULAMASI
+    # ══════════════════════════════════════════════════════════
+
+    def _check_sequential_setup(
+        self,
+        eq_highs: List[EqualLevel],
+        eq_lows: List[EqualLevel],
+        sweep: Optional[LiquiditySweep],
+        mss: dict,
+        bull_fvg_zones: List[FVGZone],
+        bear_fvg_zones: List[FVGZone],
+        current_price: float,
+        atr: float,
+    ) -> Tuple[int, int, List[str], List[str]]:
+        """
+        Sıralı ICT Setup Doğrulaması:
+          SHORT: Equal Highs → Bearish Sweep → Bearish MSS → Bear FVG retest
+          LONG:  Equal Lows  → Bullish Sweep → Bullish MSS → Bull FVG retest
+
+        Her adım kronolojik sırayla olmalı. Tam sıra = maksimum bonus.
+
+        Returns:
+            (long_bonus, short_bonus, long_reasons, short_reasons)
+        """
+        l_bonus = 0
+        s_bonus = 0
+        l_reasons: List[str] = []
+        s_reasons: List[str] = []
+
+        # ── LONG Sequential: EqLows → BullSweep → BullMSS → BullFVG ──
+        if eq_lows:
+            best_eq = max(eq_lows, key=lambda e: e.touches)
+            l_bonus += 1
+            l_reasons.append(f"EqL({best_eq.touches}x)")
+
+            if sweep and sweep.direction == 'bullish_sweep':
+                # Sweep equal low seviyesine yakın mı?
+                if abs(sweep.swept_level - best_eq.level) < atr * 0.5:
+                    l_bonus += 2
+                    l_reasons.append("Sweep→EqL")
+                else:
+                    l_bonus += 1
+                    l_reasons.append("Sweep↑")
+
+                # Sweep, equal low'dan sonra mı? (kronolojik)
+                if sweep.bar_index > best_eq.last_index:
+                    l_bonus += 1
+                    l_reasons.append("SeqOK")
+
+            if mss['bullish']:
+                l_bonus += 1
+                l_reasons.append("MSS↑")
+
+            fvg_retest, fvg_zone = self._check_fvg_retest(
+                current_price, bull_fvg_zones, atr
+            )
+            if fvg_retest:
+                l_bonus += 2
+                l_reasons.append("FVG_RT↑")
+
+        # ── SHORT Sequential: EqHighs → BearSweep → BearMSS → BearFVG ──
+        if eq_highs:
+            best_eq = max(eq_highs, key=lambda e: e.touches)
+            s_bonus += 1
+            s_reasons.append(f"EqH({best_eq.touches}x)")
+
+            if sweep and sweep.direction == 'bearish_sweep':
+                if abs(sweep.swept_level - best_eq.level) < atr * 0.5:
+                    s_bonus += 2
+                    s_reasons.append("Sweep→EqH")
+                else:
+                    s_bonus += 1
+                    s_reasons.append("Sweep↓")
+
+                if sweep.bar_index > best_eq.last_index:
+                    s_bonus += 1
+                    s_reasons.append("SeqOK")
+
+            if mss['bearish']:
+                s_bonus += 1
+                s_reasons.append("MSS↓")
+
+            fvg_retest, fvg_zone = self._check_fvg_retest(
+                current_price, bear_fvg_zones, atr
+            )
+            if fvg_retest:
+                s_bonus += 2
+                s_reasons.append("FVG_RT↓")
+
+        return l_bonus, s_bonus, l_reasons, s_reasons
 
     # ══════════════════════════════════════════════════════════
     # KILLZONE  [FIX #3]
@@ -736,11 +1048,14 @@ class ICTStrategy(BaseStrategy):
         ob_bull: Optional[float],
         ob_bear: Optional[float],
         is_killzone: bool,
+        eq_highs: Optional[List[EqualLevel]] = None,
+        eq_lows: Optional[List[EqualLevel]] = None,
     ) -> Tuple[int, Optional[str], List[str]]:
         """
         Confluence skorlama.
 
         [FIX #4, #10]: Eşit skor → çelişki mesajı + reason korunur.
+        v3.0: Equal Level + FVG retest scoring eklendi.
         """
         ms = self.MIN_CONFLUENCE_SCORE
 
@@ -772,6 +1087,12 @@ class ICTStrategy(BaseStrategy):
             l_score += 1
             l_reasons.append("KZ")
 
+        # Equal Lows → LONG hedefleri (sweep sonrası dönüş)
+        if eq_lows:
+            best = max(eq_lows, key=lambda e: e.touches)
+            l_score += min(best.touches, 3)  # Max 3 puan
+            l_reasons.append(f"EqL({best.touches}x)")
+
         # ── SHORT ──
         s_score = 0
         s_reasons: List[str] = []
@@ -799,6 +1120,12 @@ class ICTStrategy(BaseStrategy):
         if is_killzone:
             s_score += 1
             s_reasons.append("KZ")
+
+        # Equal Highs → SHORT hedefleri (sweep sonrası dönüş)
+        if eq_highs:
+            best = max(eq_highs, key=lambda e: e.touches)
+            s_score += min(best.touches, 3)
+            s_reasons.append(f"EqH({best.touches}x)")
 
         # ── Yön Seçimi ──
         if l_score > s_score and l_score >= ms:
@@ -871,26 +1198,45 @@ class ICTStrategy(BaseStrategy):
         entry: float,
         atr: float,
         df: pd.DataFrame,
+        eq_highs: Optional[List[EqualLevel]] = None,
+        eq_lows: Optional[List[EqualLevel]] = None,
     ) -> float:
         """
-        TP: Geçmiş likidite havuzu.
+        TP: Equal Level likidite havuzu → Geçmiş swing → ATR fallback.
+
+        v3.0: Equal level'lar öncelikli TP hedefi:
+          LONG  TP → Equal Highs (yukarıdaki likidite)
+          SHORT TP → Equal Lows  (aşağıdaki likidite)
 
         [FIX #9]: NaN koruması güçlendirildi.
         """
         lookback = min(50, len(df) - 1)
         atr_fallback = self.default_tp_mult * atr
+        min_distance = atr
 
+        # ── P1: Equal Level TP (en kaliteli hedef) ──
+        if direction == 'LONG' and eq_highs:
+            # En yakın equal high seviyesi (entry'den yukarıda)
+            above = [e for e in eq_highs if e.level > entry + min_distance]
+            if above:
+                nearest = min(above, key=lambda e: e.level - entry)
+                return nearest.level
+
+        if direction == 'SHORT' and eq_lows:
+            below = [e for e in eq_lows if e.level < entry - min_distance]
+            if below:
+                nearest = max(below, key=lambda e: entry - e.level)
+                return nearest.level
+
+        # ── P2: Geçmiş swing TP (mevcut mantık) ──
         if lookback < 5:
             if direction == 'LONG':
                 return entry + atr_fallback
             else:
                 return entry - atr_fallback
 
-        min_distance = atr  # TP en az 1 ATR uzakta
-
         if direction == 'LONG':
             past = df['high'].shift(1).iloc[-lookback:]
-            # [FIX #9]: dropna ile NaN temizle
             past_clean = past.dropna()
             if past_clean.empty:
                 return entry + atr_fallback

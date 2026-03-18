@@ -1,12 +1,14 @@
 """
-Meta-Label Predictor v1.2 (Unified Model Loading)
+Meta-Label Predictor v2.0 (LightGBM + Legacy XGBoost)
 
-v1.2 Fixes:
+v2.0 Changes:
+  - LightGBM model support (v3.0 trainer)
+  - XGBoost backward compatibility preserved
+  - Automatic model type detection (lgb vs xgb)
+
+v1.2 preserved:
   - MODEL_DIR path unified (uses ai/models)
-  - Model format: dict with 'model', 'features', 'meta' keys (v1.2 trainer compat)
   - Legacy tuple format (model, features, meta) still supported
-  - Mutable default argument fixed
-  - get_regime_stats key format corrected
   - Fallback model search without timeframe suffix
   - NaN/Inf protection in feature extraction
 """
@@ -18,6 +20,23 @@ import joblib
 from typing import Dict, Optional, Tuple, List
 
 from ai.regime_detector import Regime
+
+# ICT feature extraction (lazy import)
+_ict_core = None
+_ict_features = None
+
+def _ensure_ict_imports():
+    """Lazy import for ict_core and ict_features."""
+    global _ict_core, _ict_features
+    if _ict_core is None:
+        try:
+            from ai import ict_core as ic
+            from ai import ict_features as iff
+            _ict_core = ic
+            _ict_features = iff
+        except ImportError:
+            pass
+    return _ict_core is not None
 
 # Model directory: ai/models (same level as this file's parent)
 MODEL_DIR = os.path.join(
@@ -47,6 +66,9 @@ class MetaPredictor:
         if not os.path.exists(MODEL_DIR):
             print(f"  [WARN] Model directory not found: {MODEL_DIR}")
             return
+
+        # v3.0: merged regimes (directional, volatile) + standard regimes
+        all_regime_values = [r.value for r in Regime] + ['directional', 'volatile']
 
         for tf in self.timeframes:
             for regime in Regime:
@@ -94,18 +116,56 @@ class MetaPredictor:
                         if 'metrics' in meta and isinstance(meta['metrics'], dict):
                             pass
 
+                    # Detect model type
+                    model_type = type(model).__name__
                     self.models[key] = {
                         'model': model,
                         'features': list(features) if features else [],
                         'meta': meta if isinstance(meta, dict) else {},
                         'threshold': threshold,
+                        'model_type': model_type,
                     }
                     loaded += 1
 
                 except Exception as e:
                     print(f"  [ERROR] Meta-model load failed ({regime.value}_{tf}): {e}")
 
-        print(f"  [MODEL] MetaPredictor: {loaded} model(s) loaded ({', '.join(self.timeframes)})")
+        # v3.0: Load merged regime models (directional, volatile)
+        for tf in self.timeframes:
+            for merged_name in ['directional', 'volatile']:
+                key = f"{merged_name}_{tf}"
+                if key in self.models:
+                    continue
+                candidates = [
+                    os.path.join(MODEL_DIR, f"meta_{merged_name}_{tf}.joblib"),
+                    os.path.join(MODEL_DIR, "meta", f"meta_{merged_name}_{tf}.joblib"),
+                ]
+                for cpath in candidates:
+                    if os.path.exists(cpath):
+                        try:
+                            raw = joblib.load(cpath)
+                            model, features, meta = self._parse_model_data(raw)
+                            if model is None:
+                                continue
+                            threshold = 0.60
+                            if isinstance(meta, dict):
+                                MAX_LIVE_THRESHOLD = 0.65
+                                raw_thr = meta.get('best_threshold', 0.60)
+                                threshold = max(0.55, min(raw_thr, MAX_LIVE_THRESHOLD))
+                            self.models[key] = {
+                                'model': model,
+                                'features': list(features) if features else [],
+                                'meta': meta if isinstance(meta, dict) else {},
+                                'threshold': threshold,
+                                'model_type': type(model).__name__,
+                            }
+                            loaded += 1
+                        except Exception as e:
+                            print(f"  [ERROR] Merged model load failed ({key}): {e}")
+                        break
+
+        types = set(v.get('model_type', '?') for v in self.models.values())
+        print(f"  [MODEL] MetaPredictor: {loaded} model(s) loaded ({', '.join(self.timeframes)}) [{', '.join(types)}]")
 
     def _parse_model_data(self, raw):
         """
@@ -114,12 +174,12 @@ class MetaPredictor:
           - Dict format (v1.2): {'model': ..., 'features': [...], 'meta': {...}}
           - Tuple format (legacy): (model, features, meta)
           - Raw model object (oldest format)
+          - Both LightGBM and XGBoost models (sklearn API compatible)
         """
         if isinstance(raw, dict):
             model = raw.get('model')
             features = raw.get('features', [])
             meta = raw.get('metadata', raw.get('meta', {}))
-            # If metrics are stored separately, merge them
             if 'metrics' in raw and isinstance(raw['metrics'], dict):
                 if isinstance(meta, dict):
                     meta.update(raw['metrics'])
@@ -131,11 +191,18 @@ class MetaPredictor:
             meta = raw[2] if len(raw) > 2 else {}
             return model, features, meta
 
-        # Raw model object
+        # Raw model object (LightGBM or XGBoost)
         features = getattr(raw, 'feature_names_in_', [])
+        # XGBoost booster fallback
         if hasattr(raw, 'get_booster'):
             try:
                 features = raw.get_booster().feature_names or features
+            except Exception:
+                pass
+        # LightGBM booster fallback
+        if hasattr(raw, 'feature_name_'):
+            try:
+                features = raw.feature_name_ or features
             except Exception:
                 pass
         return raw, features, {}
@@ -159,15 +226,37 @@ class MetaPredictor:
         key = f"{regime_val}_{timeframe}"
         self.last_debug = None  # reset
 
+        # v3.0: Merged regime fallback map
+        MERGED_FALLBACK = {
+            'trending': 'directional',
+            'mean_reverting': 'directional',
+            'high_volatile': 'volatile',
+            'low_volatile': 'volatile',
+        }
+
         # TF fallback: 1h yoksa 4h, 4h yoksa 1h dene
+        # Sonra merged regime fallback dene
         if key not in self.models:
             tf_fallback_order = ['4h', '1h', '15m']
             found_key = None
+            # 1) Aynı regime, farklı TF
             for alt_tf in tf_fallback_order:
                 alt_key = f"{regime_val}_{alt_tf}"
                 if alt_key in self.models:
                     found_key = alt_key
                     break
+            # 2) Merged regime fallback
+            if not found_key and regime_val in MERGED_FALLBACK:
+                merged_val = MERGED_FALLBACK[regime_val]
+                merged_key = f"{merged_val}_{timeframe}"
+                if merged_key in self.models:
+                    found_key = merged_key
+                else:
+                    for alt_tf in tf_fallback_order:
+                        alt_key = f"{merged_val}_{alt_tf}"
+                        if alt_key in self.models:
+                            found_key = alt_key
+                            break
             if found_key:
                 key = found_key
             else:
@@ -193,6 +282,22 @@ class MetaPredictor:
                 'regime_low_vol': float(regime_val == 'low_volatile'),
             }
 
+            # ICT features: model ict_* istiyorsa canlı hesapla
+            ict_values = {}
+            needs_ict = any(c.startswith('ict_') for c in feature_cols)
+            if needs_ict and _ensure_ict_imports():
+                try:
+                    cp = float(df['close'].iloc[-1])
+                    atr_val = float(df['atr'].iloc[-1]) if 'atr' in df.columns else cp * 0.01
+                    if np.isnan(atr_val) or atr_val <= 0:
+                        atr_val = cp * 0.01
+                    analysis = _ict_core.analyze(df.tail(80), signal_direction, 3, 2)
+                    ict_values = _ict_features.extract_ict_features(
+                        analysis, cp, atr_val, signal_direction
+                    )
+                except Exception as e_ict:
+                    print(f"    [WARN] ICT feature extraction failed: {e_ict}")
+
             # Build feature vector in model's expected order
             row_data = {}
             missing_features = []
@@ -204,6 +309,13 @@ class MetaPredictor:
                 if col in meta_values:
                     row_data[col] = meta_values[col]
                     feature_details[col] = {"value": meta_values[col], "source": "signal"}
+                elif col in ict_values:
+                    row_data[col] = ict_values[col]
+                    if ict_values[col] != 0.0:
+                        ok_features.append(col)
+                    else:
+                        zero_features.append(col)
+                    feature_details[col] = {"value": round(ict_values[col], 4), "source": "ict"}
                 elif col in last_row.index:
                     val = last_row[col]
                     if pd.isna(val) or np.isinf(val):
