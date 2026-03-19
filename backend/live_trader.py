@@ -18,11 +18,24 @@ from ai.entry_gate import five_layer_gate, GateResult
 from strategies.bb_mr_strategy import BBMRStrategyMixin
 from strategies.ict_smc_strategy import ICTSMCStrategyMixin
 from strategies.vwap_scalping_strategy import VWAPScalpingMixin
+from strategies.trend_following_strategy import TrendFollowingMixin
 
 SCAN_SYMBOLS = [
     "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT",
     "ADA/USDT", "DOGE/USDT", "AVAX/USDT", "DOT/USDT", "POL/USDT"
 ]
+
+CORE_V1_SYMBOLS = [
+    "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT",
+    "XRP/USDT", "ADA/USDT", "DOGE/USDT", "AVAX/USDT",
+]
+CORE_V1_SYMBOL_LIMIT = 40
+CORE_V2_SYMBOLS = [
+    "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT",
+    "ADA/USDT", "DOGE/USDT", "AVAX/USDT", "DOT/USDT", "LINK/USDT",
+]
+CORE_V2_SYMBOL_LIMIT = 50
+CORE_V2_AGGR_SYMBOL_LIMIT = 60
 
 import ccxt
 import requests as _requests
@@ -63,7 +76,7 @@ def get_all_usdt_pairs():
         return SCAN_SYMBOLS
 
 
-class LivePaperTrader(VWAPScalpingMixin, ICTSMCStrategyMixin):
+class LivePaperTrader(TrendFollowingMixin, VWAPScalpingMixin, ICTSMCStrategyMixin):
     """
     Background'da calisan Otonom Paper Trading (Sanal Bakiye) servisi.
     """
@@ -124,7 +137,9 @@ class LivePaperTrader(VWAPScalpingMixin, ICTSMCStrategyMixin):
         self._strategy_enabled = {
             'bb_mr': True,
             'ict_smc': True,
+            'trend_v4': True,
         }
+        self._active_profile = 'custom'
 
         # ── v5.1: Backtest-aligned BB MR cooldown ──
         self._bb_consecutive_sl = 0
@@ -135,14 +150,35 @@ class LivePaperTrader(VWAPScalpingMixin, ICTSMCStrategyMixin):
 
         # ── ICT/SMC Strategy params ──
         self._ICT_PARAMS = {
-            'min_confluence': 2,      # Min POI confluence skoru (1-4)
-            'min_rr': 2.0,            # Min Risk:Reward oranı
+            'min_confluence': 3,      # Min POI confluence skoru (1-4)
+            'min_rr': 1.45,           # Min Risk:Reward oranı
             'max_sl_pct': 2.5,        # Max SL yüzdesi
             'require_sweep': True,    # Likidite sweep zorunlu mu
             'require_displacement': False,  # Displacement zorunlu mu
             'killzone_only': False,   # Sadece London/NY killzone
-            'max_notional': 200.0,    # ICT trade başına max notional
-            'max_loss_cap': 8.0,      # ICT trade başına max kayıp
+            'max_notional': 300.0,    # ICT trade başına max notional
+            'max_loss_cap': 5.8,      # ICT trade başına max kayıp
+            'sr_proximity_limit': 0.05,  # HTF support/resistance yakınlık eşiği
+            'max_poi_distance_atr': 5.0,
+            'max_zone_age_bars': 72,
+            'entry_pullback_min_pct': 0.015,
+            'entry_range_lookback': 20,
+            'entry_range_top_ceil': 0.85,
+            'entry_range_bot_floor': 0.15,
+            'entry_max_ema21_ext': 0.045,
+            'trend_recent_bars_4h': 48,
+            'trend_min_labels': 8,
+            'trend_max_labels': 20,
+            'swing_params': {
+                '15m': {'left': 3, 'right': 2},
+                '1h': {'left': 5, 'right': 3},
+                '4h': {'left': 5, 'right': 5},
+                '1d': {'left': 7, 'right': 5},
+            },
+            'rsi_overbought': 72.0,
+            'rsi_oversold': 28.0,
+            'rsi_extreme_overbought': 82.0,
+            'rsi_extreme_oversold': 18.0,
         }
         self._ict_consecutive_sl = 0
         self._ict_cooldown_until = 0
@@ -209,6 +245,10 @@ class LivePaperTrader(VWAPScalpingMixin, ICTSMCStrategyMixin):
             saved_enabled = state.get('strategy_enabled', {})
             if saved_enabled:
                 self._strategy_enabled.update(saved_enabled)
+            self._active_profile = state.get('active_profile', 'custom')
+            saved_symbols = state.get('scanned_symbols', [])
+            if isinstance(saved_symbols, list) and len(saved_symbols) >= 5:
+                self.scanned_symbols = saved_symbols
             saved_ict = state.get('ict_params', {})
             if saved_ict:
                 self._ICT_PARAMS.update(saved_ict)
@@ -288,6 +328,8 @@ class LivePaperTrader(VWAPScalpingMixin, ICTSMCStrategyMixin):
                     'max_open_trades_limit': self.max_open_trades_limit,
                     'consecutive_losses': self.consecutive_losses,
                     'symbol_consecutive_losses': self.symbol_consecutive_losses,
+                    'active_profile': self._active_profile,
+                    'scanned_symbols': self.scanned_symbols,
                     # Strategy settings
                     'strategy_enabled': self._strategy_enabled,
                     'ict_params': self._ICT_PARAMS,
@@ -400,6 +442,7 @@ class LivePaperTrader(VWAPScalpingMixin, ICTSMCStrategyMixin):
         with self.trades_lock:
             return {
                 "status": "Running" if self.is_running else "Stopped",
+                "is_running": self.is_running,
                 "balance": round(self.balance, 2),
                 "open_trades_count": len(self.open_trades),
                 "pending_orders_count": len(self.pending_orders),
@@ -574,9 +617,12 @@ class LivePaperTrader(VWAPScalpingMixin, ICTSMCStrategyMixin):
             # if 'vwap_scalp' in strat:
             #     self._check_vwap_exit(t, price)
             
-            if t.get('strategy', '') in ('ict_smc_v1', 'ict_smc_v2'):
+            if t.get('strategy', '') in ('ict_smc_v1', 'ict_smc_v2', 'ict_smc_v3'):
                 # ICT/SMC → ATR-based BE/trailing
                 self._check_ict_exit(t, price)
+            elif t.get('strategy', '') == 'trend_v4.4':
+                # Trend Following → Late trail + SL + max loss
+                self._check_trend_exit(t, price)
             else:
                 # Legacy trades → PositionManager
                 self._check_v3_manager(t, price)
@@ -970,11 +1016,35 @@ class LivePaperTrader(VWAPScalpingMixin, ICTSMCStrategyMixin):
                 if time.time() - _last_symbol_refresh > _SYMBOL_REFRESH_INTERVAL:
                     try:
                         all_pairs = get_all_usdt_pairs()
+                        profile = getattr(self, '_active_profile', 'custom')
                         with self.trades_lock:
-                            self.scanned_symbols = all_pairs
-                        self.log(
-                            f"[SYNC] Top {len(self.scanned_symbols)} liquid USDT pairs (volume-filtered)"
-                        )
+                            if profile == 'core_v1':
+                                limited = all_pairs[:CORE_V1_SYMBOL_LIMIT]
+                                self.scanned_symbols = limited if len(limited) >= 8 else list(CORE_V1_SYMBOLS)
+                            elif profile == 'core_v2':
+                                limited = all_pairs[:CORE_V2_SYMBOL_LIMIT]
+                                self.scanned_symbols = limited if len(limited) >= 10 else list(CORE_V2_SYMBOLS)
+                            elif profile == 'core_v2_aggressive':
+                                limited = all_pairs[:CORE_V2_AGGR_SYMBOL_LIMIT]
+                                self.scanned_symbols = limited if len(limited) >= 15 else list(CORE_V2_SYMBOLS)
+                            else:
+                                self.scanned_symbols = all_pairs
+                        if profile == 'core_v1':
+                            self.log(
+                                f"[SYNC] Core V1 universe refreshed: {len(self.scanned_symbols)} top-liquid pairs"
+                            )
+                        elif profile == 'core_v2':
+                            self.log(
+                                f"[SYNC] Core V2 universe refreshed: {len(self.scanned_symbols)} top-liquid pairs"
+                            )
+                        elif profile == 'core_v2_aggressive':
+                            self.log(
+                                f"[SYNC] Core V2 Aggressive universe refreshed: {len(self.scanned_symbols)} top-liquid pairs"
+                            )
+                        else:
+                            self.log(
+                                f"[SYNC] Top {len(self.scanned_symbols)} liquid USDT pairs (volume-filtered)"
+                            )
                         _last_symbol_refresh = time.time()
                     except Exception as e:
                         msg = str(e).lower()
@@ -995,6 +1065,11 @@ class LivePaperTrader(VWAPScalpingMixin, ICTSMCStrategyMixin):
                 if self._strategy_enabled.get('ict_smc', True):
                     self.log(f"[SEARCH] ICT/SMC v2.4 scanning {len(self.scanned_symbols)} markets...")
                     self._ict_smc_scan(fetcher)
+
+                # ── Strategy 3: Trend Following v4.4 ──
+                if self._strategy_enabled.get('trend_v4', True):
+                    self.log(f"[SEARCH] Trend v4.4 scanning {len(self.scanned_symbols)} markets...")
+                    self._trend_scan(fetcher)
 
             except Exception as e:
                 err = str(e).lower()
@@ -1517,36 +1592,251 @@ class LivePaperTrader(VWAPScalpingMixin, ICTSMCStrategyMixin):
             "message": f"Trade {trade_id} closed at {cp:.4f}.",
         }
 
-    def update_settings(self, max_open_trades: int = None, max_notional: float = None,
-                         max_loss_cap: float = None, min_rr: float = None,
-                         tp_min: float = None, balance: float = None,
+    def apply_profile_core_v1(self):
+        """
+        Core V1 profile:
+          - Trend-only execution
+          - Curated high-liquidity symbol universe
+          - Conservative risk envelope
+        """
+        with self.trades_lock:
+            self._active_profile = 'core_v1'
+            self._strategy_enabled['bb_mr'] = False
+            self._strategy_enabled['ict_smc'] = False
+            self._strategy_enabled['trend_v4'] = True
+
+            all_pairs = get_all_usdt_pairs()
+            limited = all_pairs[:CORE_V1_SYMBOL_LIMIT]
+            self.scanned_symbols = limited if len(limited) >= 8 else list(CORE_V1_SYMBOLS)
+            self.max_open_trades_limit = 3
+
+            if self.leverage > 10:
+                self.leverage = 10
+
+            self._user_max_notional = 250.0
+            self._user_max_loss_cap = 4.5
+            self._TREND_PARAMS['min_adx'] = 18
+            self._TREND_PARAMS['min_vol_ratio'] = 0.70
+            self._TREND_PARAMS['cooldown_hours'] = 1.5
+            self._TREND_PARAMS['timeout_hours'] = 72
+            self._TREND_PARAMS['max_notional'] = 250.0
+            self._TREND_PARAMS['max_loss_cap'] = 4.5
+            self._ICT_PARAMS['max_notional'] = 250.0
+            self._ICT_PARAMS['max_loss_cap'] = 4.5
+
+            self._adaptive_threshold = max(self._adaptive_threshold, 0.70)
+
+        self._force_save()
+        self.log(
+            "[PROFILE] Core V1 applied: Trend-only, max_trades=3, "
+            f"symbols={len(self.scanned_symbols)}, leverage<=10, notional=$250, max_loss=$4.5"
+        )
+        return {
+            "success": True,
+            "profile": "core_v1",
+            "message": "Core V1 profile applied",
+            "settings": {
+                "max_open_trades": self.max_open_trades_limit,
+                "leverage": self.leverage,
+                "max_notional": self._user_max_notional,
+                "max_loss_cap": self._user_max_loss_cap,
+                "trend_min_adx": self._TREND_PARAMS.get('min_adx'),
+                "trend_min_vol_ratio": self._TREND_PARAMS.get('min_vol_ratio'),
+                "bb_mr_enabled": self._strategy_enabled.get('bb_mr', False),
+                "ict_smc_enabled": self._strategy_enabled.get('ict_smc', False),
+                "trend_v4_enabled": self._strategy_enabled.get('trend_v4', True),
+                "symbols": self.scanned_symbols,
+            },
+        }
+
+    def apply_profile_core_v2_aggressive(self):
+        """
+        Core V2 Aggressive profile:
+          - ICT/SMC-only execution with higher throughput
+          - Dynamic top-60 high-liquidity universe
+          - Higher risk budget for monthly growth targeting
+        """
+        with self.trades_lock:
+            self._active_profile = 'core_v2_aggressive'
+            self._strategy_enabled['bb_mr'] = False
+            self._strategy_enabled['ict_smc'] = True
+            self._strategy_enabled['trend_v4'] = False
+
+            all_pairs = get_all_usdt_pairs()
+            limited = all_pairs[:CORE_V2_AGGR_SYMBOL_LIMIT]
+            self.scanned_symbols = limited if len(limited) >= 15 else list(CORE_V2_SYMBOLS)
+            self.max_open_trades_limit = 5
+
+            if self.leverage > 10:
+                self.leverage = 10
+
+            self._user_max_notional = 300.0
+            self._user_max_loss_cap = 5.8
+            self._ICT_PARAMS['max_notional'] = 300.0
+            self._ICT_PARAMS['max_loss_cap'] = 5.8
+            self._ICT_PARAMS['min_rr'] = 1.45
+            self._ICT_PARAMS['max_sl_pct'] = 2.5
+            self._ICT_PARAMS['min_confluence'] = 2
+            self._ICT_PARAMS['sr_proximity_limit'] = 0.035
+            self._ICT_PARAMS['max_poi_distance_atr'] = 6.0
+            self._ICT_PARAMS['max_zone_age_bars'] = 84
+            self._ICT_PARAMS['entry_pullback_min_pct'] = 0.015
+            self._ICT_PARAMS['entry_range_lookback'] = 20
+            self._ICT_PARAMS['entry_range_top_ceil'] = 0.85
+            self._ICT_PARAMS['entry_range_bot_floor'] = 0.15
+            self._ICT_PARAMS['entry_max_ema21_ext'] = 0.045
+            self._ICT_PARAMS['trend_recent_bars_4h'] = 42
+            self._ICT_PARAMS['trend_min_labels'] = 7
+            self._ICT_PARAMS['trend_max_labels'] = 20
+            self._ICT_PARAMS['swing_params'] = {
+                '15m': {'left': 3, 'right': 2},
+                '1h': {'left': 4, 'right': 2},
+                '4h': {'left': 5, 'right': 4},
+                '1d': {'left': 7, 'right': 5},
+            }
+            self._ICT_PARAMS['rsi_overbought'] = 76.0
+            self._ICT_PARAMS['rsi_oversold'] = 24.0
+            self._ICT_PARAMS['rsi_extreme_overbought'] = 88.0
+            self._ICT_PARAMS['rsi_extreme_oversold'] = 12.0
+            self._ICT_PARAMS['entry_trigger_tf'] = '15m'
+            self._ICT_PARAMS['structure_tf'] = '1h'
+            self._ICT_PARAMS['hard_exit_tf'] = '4h'
+            self._ICT_PARAMS['use_dynamic_partials'] = True
+
+            self._adaptive_threshold = min(self._adaptive_threshold, 0.65)
+
+        self._force_save()
+        self.log(
+            "[PROFILE] Core V2 Aggressive applied: ICT-only, max_trades=5, "
+            f"symbols={len(self.scanned_symbols)}, leverage<=10, notional=$300, max_loss=$5.8"
+        )
+        return {
+            "success": True,
+            "profile": "core_v2_aggressive",
+            "message": "Core V2 Aggressive profile applied",
+            "settings": {
+                "max_open_trades": self.max_open_trades_limit,
+                "leverage": self.leverage,
+                "max_notional": self._user_max_notional,
+                "max_loss_cap": self._user_max_loss_cap,
+                "bb_mr_enabled": self._strategy_enabled.get('bb_mr', False),
+                "ict_smc_enabled": self._strategy_enabled.get('ict_smc', True),
+                "trend_v4_enabled": self._strategy_enabled.get('trend_v4', False),
+                "entry_trigger_tf": self._ICT_PARAMS.get('entry_trigger_tf', '15m'),
+                "structure_tf": self._ICT_PARAMS.get('structure_tf', '1h'),
+                "hard_exit_tf": self._ICT_PARAMS.get('hard_exit_tf', '4h'),
+                "symbols": self.scanned_symbols,
+            },
+        }
+
+    def apply_profile_core_v2(self):
+        """
+        Core V2 profile:
+          - ICT/SMC-only execution (multi-setup: liquidity + MSS/BOS + OB/FVG)
+          - Dynamic top-50 high-liquidity universe
+          - Conservative, runner-friendly risk envelope
+        """
+        with self.trades_lock:
+            self._active_profile = 'core_v2'
+            self._strategy_enabled['bb_mr'] = False
+            self._strategy_enabled['ict_smc'] = True
+            self._strategy_enabled['trend_v4'] = False
+
+            all_pairs = get_all_usdt_pairs()
+            limited = all_pairs[:CORE_V2_SYMBOL_LIMIT]
+            self.scanned_symbols = limited if len(limited) >= 10 else list(CORE_V2_SYMBOLS)
+            self.max_open_trades_limit = 4
+
+            if self.leverage > 10:
+                self.leverage = 10
+
+            self._user_max_notional = 300.0
+            self._user_max_loss_cap = 5.8
+            self._ICT_PARAMS['max_notional'] = 300.0
+            self._ICT_PARAMS['max_loss_cap'] = 5.8
+            self._ICT_PARAMS['min_rr'] = 1.45
+            self._ICT_PARAMS['max_sl_pct'] = 2.5
+            self._ICT_PARAMS['min_confluence'] = 2
+            self._ICT_PARAMS['sr_proximity_limit'] = 0.04
+            self._ICT_PARAMS['max_poi_distance_atr'] = 5.0
+            self._ICT_PARAMS['max_zone_age_bars'] = 72
+            self._ICT_PARAMS['entry_pullback_min_pct'] = 0.015
+            self._ICT_PARAMS['entry_range_lookback'] = 20
+            self._ICT_PARAMS['entry_range_top_ceil'] = 0.85
+            self._ICT_PARAMS['entry_range_bot_floor'] = 0.15
+            self._ICT_PARAMS['entry_max_ema21_ext'] = 0.045
+            self._ICT_PARAMS['trend_recent_bars_4h'] = 48
+            self._ICT_PARAMS['trend_min_labels'] = 8
+            self._ICT_PARAMS['trend_max_labels'] = 20
+            self._ICT_PARAMS['swing_params'] = {
+                '15m': {'left': 3, 'right': 2},
+                '1h': {'left': 5, 'right': 3},
+                '4h': {'left': 5, 'right': 5},
+                '1d': {'left': 7, 'right': 5},
+            }
+            self._ICT_PARAMS['rsi_overbought'] = 75.0
+            self._ICT_PARAMS['rsi_oversold'] = 25.0
+            self._ICT_PARAMS['rsi_extreme_overbought'] = 85.0
+            self._ICT_PARAMS['rsi_extreme_oversold'] = 15.0
+            self._ICT_PARAMS['entry_trigger_tf'] = '15m'
+            self._ICT_PARAMS['structure_tf'] = '1h'
+            self._ICT_PARAMS['hard_exit_tf'] = '4h'
+            self._ICT_PARAMS['use_dynamic_partials'] = True
+
+            self._adaptive_threshold = max(self._adaptive_threshold, 0.70)
+
+        self._force_save()
+        self.log(
+            "[PROFILE] Core V2 applied: ICT-only, max_trades=4, "
+            f"symbols={len(self.scanned_symbols)}, leverage<=10, notional=$300, max_loss=$5.8"
+        )
+        return {
+            "success": True,
+            "profile": "core_v2",
+            "message": "Core V2 profile applied",
+            "settings": {
+                "max_open_trades": self.max_open_trades_limit,
+                "leverage": self.leverage,
+                "max_notional": self._user_max_notional,
+                "max_loss_cap": self._user_max_loss_cap,
+                "bb_mr_enabled": self._strategy_enabled.get('bb_mr', False),
+                "ict_smc_enabled": self._strategy_enabled.get('ict_smc', True),
+                "trend_v4_enabled": self._strategy_enabled.get('trend_v4', False),
+                "entry_trigger_tf": self._ICT_PARAMS.get('entry_trigger_tf', '15m'),
+                "structure_tf": self._ICT_PARAMS.get('structure_tf', '1h'),
+                "hard_exit_tf": self._ICT_PARAMS.get('hard_exit_tf', '4h'),
+                "symbols": self.scanned_symbols,
+            },
+        }
+
+    def update_settings(self, max_open_trades: int = None, balance: float = None,
+                         leverage: int = None, max_notional: float = None,
+                         max_loss_cap: float = None,
                          bb_mr_enabled: bool = None, ict_smc_enabled: bool = None,
-                         ict_min_confluence: int = None, ict_min_rr: float = None,
-                         ict_max_sl_pct: float = None, ict_require_sweep: bool = None,
-                         ict_require_displacement: bool = None, ict_killzone_only: bool = None,
-                         ict_max_notional: float = None, ict_max_loss_cap: float = None):
+                         trend_v4_enabled: bool = None, **kwargs):
         changes = []
-        # ── Genel ──
+        # ── Global Ayarlar ──
         if max_open_trades is not None and max_open_trades > 0:
             self.max_open_trades_limit = max_open_trades
             changes.append(f"max_trades={max_open_trades}")
         if balance is not None and balance > 0:
             self.balance = balance
             changes.append(f"balance=${balance:.2f}")
-
-        # ── BB MR ayarları ──
+        if leverage is not None and leverage > 0:
+            self.leverage = leverage
+            changes.append(f"leverage={leverage}x")
         if max_notional is not None and max_notional > 0:
             self._user_max_notional = max_notional
-            changes.append(f"bb_notional=${max_notional:.0f}")
+            # Tüm stratejilere uygula
+            self._ICT_PARAMS['max_notional'] = max_notional
+            self._TREND_PARAMS['max_notional'] = max_notional
+            changes.append(f"trade_size=${max_notional:.0f}")
         if max_loss_cap is not None and max_loss_cap > 0:
             self._user_max_loss_cap = max_loss_cap
-            changes.append(f"bb_max_loss=${max_loss_cap:.1f}")
-        if min_rr is not None and min_rr > 0:
-            self._BB_MR_PARAMS['min_rr'] = min_rr
-            changes.append(f"bb_RR={min_rr}:1")
-        if tp_min is not None and tp_min > 0:
-            self._BB_MR_PARAMS['tp_min'] = tp_min
-            changes.append(f"bb_TP={tp_min}x ATR")
+            # Tüm stratejilere uygula
+            self._ICT_PARAMS['max_loss_cap'] = max_loss_cap
+            self._TREND_PARAMS['max_loss_cap'] = max_loss_cap
+            changes.append(f"max_loss=${max_loss_cap:.1f}")
 
         # ── Strateji enable/disable ──
         if bb_mr_enabled is not None:
@@ -1555,61 +1845,29 @@ class LivePaperTrader(VWAPScalpingMixin, ICTSMCStrategyMixin):
         if ict_smc_enabled is not None:
             self._strategy_enabled['ict_smc'] = ict_smc_enabled
             changes.append(f"ict_smc={'ON' if ict_smc_enabled else 'OFF'}")
-
-        # ── ICT/SMC ayarları ──
-        if ict_min_confluence is not None and ict_min_confluence >= 0:
-            self._ICT_PARAMS['min_confluence'] = ict_min_confluence
-            changes.append(f"ict_conf={ict_min_confluence}")
-        if ict_min_rr is not None and ict_min_rr > 0:
-            self._ICT_PARAMS['min_rr'] = ict_min_rr
-            changes.append(f"ict_rr={ict_min_rr}")
-        if ict_max_sl_pct is not None and ict_max_sl_pct > 0:
-            self._ICT_PARAMS['max_sl_pct'] = ict_max_sl_pct
-            changes.append(f"ict_sl={ict_max_sl_pct}%")
-        if ict_require_sweep is not None:
-            self._ICT_PARAMS['require_sweep'] = ict_require_sweep
-            changes.append(f"ict_sweep={'ON' if ict_require_sweep else 'OFF'}")
-        if ict_require_displacement is not None:
-            self._ICT_PARAMS['require_displacement'] = ict_require_displacement
-            changes.append(f"ict_disp={'ON' if ict_require_displacement else 'OFF'}")
-        if ict_killzone_only is not None:
-            self._ICT_PARAMS['killzone_only'] = ict_killzone_only
-            changes.append(f"ict_kz={'ON' if ict_killzone_only else 'OFF'}")
-        if ict_max_notional is not None and ict_max_notional > 0:
-            self._ICT_PARAMS['max_notional'] = ict_max_notional
-            changes.append(f"ict_notional=${ict_max_notional:.0f}")
-        if ict_max_loss_cap is not None and ict_max_loss_cap > 0:
-            self._ICT_PARAMS['max_loss_cap'] = ict_max_loss_cap
-            changes.append(f"ict_max_loss=${ict_max_loss_cap:.1f}")
+        if trend_v4_enabled is not None:
+            self._strategy_enabled['trend_v4'] = trend_v4_enabled
+            changes.append(f"trend_v4={'ON' if trend_v4_enabled else 'OFF'}")
 
         if not changes:
             return {"success": False, "message": "No valid settings provided"}
+        self._active_profile = 'custom'
         self._force_save()
         self.log(f"[GEAR] Settings updated: {', '.join(changes)}")
         return {"success": True, "message": f"Updated: {', '.join(changes)}"}
 
     def get_risk_settings(self):
         return {
+            "profile": getattr(self, '_active_profile', 'custom'),
+            "symbol_count": len(self.scanned_symbols),
             "max_open_trades": self.max_open_trades_limit,
             "balance": round(self.balance, 2),
-            # VWAP Scalping (replaces BB MR)
-            "vwap_scalp_enabled": self._strategy_enabled.get('vwap_scalp', True),
-            "vwap_max_notional": self._VWAP_PARAMS.get('max_notional', 200.0),
-            "vwap_max_loss_cap": self._VWAP_PARAMS.get('max_loss_cap', 5.0),
-            "vwap_sl_pct": self._VWAP_PARAMS.get('sl_pct', 0.15),
-            "vwap_tp_pct": self._VWAP_PARAMS.get('tp_pct', 0.30),
-            "max_notional": getattr(self, '_user_max_notional', 150.0),
+            "leverage": self.leverage,
+            "max_notional": getattr(self, '_user_max_notional', 300.0),
             "max_loss_cap": getattr(self, '_user_max_loss_cap', 5.0),
-            # ICT/SMC
+            "bb_mr_enabled": self._strategy_enabled.get('bb_mr', True),
             "ict_smc_enabled": self._strategy_enabled.get('ict_smc', True),
-            "ict_min_confluence": self._ICT_PARAMS.get('min_confluence', 2),
-            "ict_min_rr": self._ICT_PARAMS.get('min_rr', 2.0),
-            "ict_max_sl_pct": self._ICT_PARAMS.get('max_sl_pct', 2.5),
-            "ict_require_sweep": self._ICT_PARAMS.get('require_sweep', True),
-            "ict_require_displacement": self._ICT_PARAMS.get('require_displacement', False),
-            "ict_killzone_only": self._ICT_PARAMS.get('killzone_only', False),
-            "ict_max_notional": self._ICT_PARAMS.get('max_notional', 200.0),
-            "ict_max_loss_cap": self._ICT_PARAMS.get('max_loss_cap', 8.0),
+            "trend_v4_enabled": self._strategy_enabled.get('trend_v4', True),
         }
 
     def reset_system(self, new_balance: float = 10000.0):

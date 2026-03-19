@@ -103,23 +103,14 @@ export default function LiveTradingPage() {
     const [savingSettings, setSavingSettings] = useState(false);
     const [settingsLoaded, setSettingsLoaded] = useState(false);
 
-    // BB MR Settings
-    const [bbEnabled, setBbEnabled] = useState(true);
-    const [formMaxNotional, setFormMaxNotional] = useState(150);
+    // Global Trading Settings
+    const [formLeverage, setFormLeverage] = useState(10);
+    const [formMaxNotional, setFormMaxNotional] = useState(300);
     const [formMaxLoss, setFormMaxLoss] = useState(5);
-    const [formMinRR, setFormMinRR] = useState(1.5);
-    const [formTpMin, setFormTpMin] = useState(0.5);
-
-    // ICT/SMC Settings
+    // Strategy Toggles
+    const [bbEnabled, setBbEnabled] = useState(true);
     const [ictEnabled, setIctEnabled] = useState(true);
-    const [ictMinConf, setIctMinConf] = useState(2);
-    const [ictMinRR, setIctMinRR] = useState(2.0);
-    const [ictMaxSlPct, setIctMaxSlPct] = useState(2.5);
-    const [ictRequireSweep, setIctRequireSweep] = useState(true);
-    const [ictRequireDisp, setIctRequireDisp] = useState(false);
-    const [ictKillzoneOnly, setIctKillzoneOnly] = useState(false);
-    const [ictMaxNotional, setIctMaxNotional] = useState(200);
-    const [ictMaxLoss, setIctMaxLoss] = useState(8);
+    const [trendEnabled, setTrendEnabled] = useState(true);
 
     // Analytics State
     const [analyticsData, setAnalyticsData] = useState<any[]>([]);
@@ -152,22 +143,12 @@ export default function LiveTradingPage() {
                 if (!settingsLoaded) {
                     setFormMaxTrades(data.max_open_trades || 5);
                     setFormBalance(data.balance || 10000);
-                    // BB MR
-                    setBbEnabled(data.bb_mr_enabled !== false);
-                    setFormMaxNotional(data.max_notional || 150);
+                    setFormLeverage(data.leverage || 10);
+                    setFormMaxNotional(data.max_notional || 300);
                     setFormMaxLoss(data.max_loss_cap || 5);
-                    setFormMinRR(data.min_rr || 1.5);
-                    setFormTpMin(data.tp_min || 0.5);
-                    // ICT/SMC
+                    setBbEnabled(data.bb_mr_enabled !== false);
                     setIctEnabled(data.ict_smc_enabled !== false);
-                    setIctMinConf(data.ict_min_confluence ?? 2);
-                    setIctMinRR(data.ict_min_rr ?? 2.0);
-                    setIctMaxSlPct(data.ict_max_sl_pct ?? 2.5);
-                    setIctRequireSweep(data.ict_require_sweep !== false);
-                    setIctRequireDisp(data.ict_require_displacement === true);
-                    setIctKillzoneOnly(data.ict_killzone_only === true);
-                    setIctMaxNotional(data.ict_max_notional ?? 200);
-                    setIctMaxLoss(data.ict_max_loss_cap ?? 8);
+                    setTrendEnabled(data.trend_v4_enabled !== false);
                     setSettingsLoaded(true);
                 }
             }
@@ -220,22 +201,12 @@ export default function LiveTradingPage() {
                 body: JSON.stringify({
                     max_open_trades: formMaxTrades,
                     balance: formBalance,
-                    // BB MR
-                    bb_mr_enabled: bbEnabled,
+                    leverage: formLeverage,
                     max_notional: formMaxNotional,
                     max_loss_cap: formMaxLoss,
-                    min_rr: formMinRR,
-                    tp_min: formTpMin,
-                    // ICT/SMC
+                    bb_mr_enabled: bbEnabled,
                     ict_smc_enabled: ictEnabled,
-                    ict_min_confluence: ictMinConf,
-                    ict_min_rr: ictMinRR,
-                    ict_max_sl_pct: ictMaxSlPct,
-                    ict_require_sweep: ictRequireSweep,
-                    ict_require_displacement: ictRequireDisp,
-                    ict_killzone_only: ictKillzoneOnly,
-                    ict_max_notional: ictMaxNotional,
-                    ict_max_loss_cap: ictMaxLoss,
+                    trend_v4_enabled: trendEnabled,
                 })
             });
             if (res.ok) { await fetchStatus(); await fetchRiskSettings(); }
@@ -343,7 +314,7 @@ export default function LiveTradingPage() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '20px' }}>
                 <div>
                     <h1 style={{ fontSize: '24px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '4px' }}>Live Auto-Trader</h1>
-                    <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>BB MR v6.0 + ICT/SMC v2 (Paper Trading)</p>
+                    <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>BB MR + ICT/SMC + Trend v4.4 (Paper Trading)</p>
                 </div>
                 <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
                     <div style={{
@@ -394,43 +365,15 @@ export default function LiveTradingPage() {
                     <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
                         <SettingInput label="Max Trades" value={formMaxTrades} onChange={setFormMaxTrades} step={1} min={1} max={30} />
                         <SettingInput label="Balance" value={formBalance} onChange={setFormBalance} step={100} min={100} max={1000000} unit="$" />
+                        <SettingInput label="Leverage" value={formLeverage} onChange={setFormLeverage} step={1} min={1} max={50} unit="x" />
+                        <SettingInput label="Trade Size" value={formMaxNotional} onChange={setFormMaxNotional} step={50} min={10} max={5000} unit="$" />
+                        <SettingInput label="Max Loss" value={formMaxLoss} onChange={setFormMaxLoss} step={0.5} min={0.5} max={100} unit="$" />
                     </div>
-                </div>
-
-                {/* Strategy Config Grid */}
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '20px' }}>
-                    {/* BB Mean Reversion Config */}
-                    <div className="glass" style={{ padding: '16px 20px', borderRadius: '12px', opacity: bbEnabled ? 1 : 0.6, transition: 'opacity 0.2s' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                            {sectionTitle('BB Mean Reversion v6.0', '#4f9eff')}
-                            <ToggleSwitch label={bbEnabled ? 'ON' : 'OFF'} enabled={bbEnabled} onToggle={() => setBbEnabled(!bbEnabled)} color="#4f9eff" />
-                        </div>
-                        <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap' }}>
-                            <SettingInput label="Max Notional" value={formMaxNotional} onChange={setFormMaxNotional} step={10} min={10} max={5000} unit="$" />
-                            <SettingInput label="Max Loss" value={formMaxLoss} onChange={setFormMaxLoss} step={0.5} min={0.5} max={100} unit="$" />
-                            <SettingInput label="Min R:R" value={formMinRR} onChange={setFormMinRR} step={0.1} min={1.0} max={5} unit=":1" />
-                            <SettingInput label="TP Min" value={formTpMin} onChange={setFormTpMin} step={0.1} min={0.1} max={5} unit="x ATR" />
-                        </div>
-                    </div>
-
-                    {/* ICT/SMC Config */}
-                    <div className="glass" style={{ padding: '16px 20px', borderRadius: '12px', opacity: ictEnabled ? 1 : 0.6, transition: 'opacity 0.2s' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                            {sectionTitle('ICT / SMC v2', '#c084fc')}
-                            <ToggleSwitch label={ictEnabled ? 'ON' : 'OFF'} enabled={ictEnabled} onToggle={() => setIctEnabled(!ictEnabled)} color="#c084fc" />
-                        </div>
-                        <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap', marginBottom: 10 }}>
-                            <SettingInput label="Max Notional" value={ictMaxNotional} onChange={setIctMaxNotional} step={10} min={10} max={5000} unit="$" />
-                            <SettingInput label="Max Loss" value={ictMaxLoss} onChange={setIctMaxLoss} step={0.5} min={0.5} max={100} unit="$" />
-                            <SettingInput label="Min R:R" value={ictMinRR} onChange={setIctMinRR} step={0.1} min={1} max={10} unit=":1" />
-                            <SettingInput label="Max SL %" value={ictMaxSlPct} onChange={setIctMaxSlPct} step={0.1} min={0.5} max={5} unit="%" />
-                            <SettingInput label="Min Conf" value={ictMinConf} onChange={setIctMinConf} step={1} min={1} max={4} />
-                        </div>
-                        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-                            <ToggleSwitch label="Sweep Required" enabled={ictRequireSweep} onToggle={() => setIctRequireSweep(!ictRequireSweep)} color="#c084fc" />
-                            <ToggleSwitch label="Displacement" enabled={ictRequireDisp} onToggle={() => setIctRequireDisp(!ictRequireDisp)} color="#c084fc" />
-                            <ToggleSwitch label="Killzone Only" enabled={ictKillzoneOnly} onToggle={() => setIctKillzoneOnly(!ictKillzoneOnly)} color="#c084fc" />
-                        </div>
+                    <div style={{ marginTop: 14, display: 'flex', gap: 20, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <span style={{ fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 700 }}>Strategies</span>
+                        <ToggleSwitch label="BB MR v7.1" enabled={bbEnabled} onToggle={() => setBbEnabled(!bbEnabled)} color="#4f9eff" />
+                        <ToggleSwitch label="ICT/SMC v2" enabled={ictEnabled} onToggle={() => setIctEnabled(!ictEnabled)} color="#c084fc" />
+                        <ToggleSwitch label="Trend v4.4" enabled={trendEnabled} onToggle={() => setTrendEnabled(!trendEnabled)} color="#f59e0b" />
                     </div>
                 </div>
 

@@ -4,6 +4,7 @@ from backtest.data_fetcher import DataFetcher
 from backtest.engine import BacktestEngine
 from ai.adaptive_backtest import AdaptiveBacktest
 from ai.ict_backtest import ICTBacktest
+from backtest.ict_quick_test import quick_backtest_ict
 from pydantic import BaseModel
 from typing import Optional, List
 import traceback
@@ -338,3 +339,81 @@ def run_multi_coin_backtest(request: MultiCoinBacktestRequest):
         "results": results,
         "errors": errors,
     }
+
+
+# ────────────────────────────────────────────────────────────
+#  ICT/SMC v2.5 Full Backtest (Complete Strategy Simulation)
+# ────────────────────────────────────────────────────────────
+
+class TrendBacktestRequest(BaseModel):
+    symbol: str = "BTC/USDT"
+    days: int = 30
+    initial_balance: float = 1000.0
+    leverage: int = 10
+
+
+@router.post("/trend-backtest")
+def trend_backtest_endpoint(request: TrendBacktestRequest):
+    """Trend Following Backtest — Supertrend + EMA + ADX + Smart Trail"""
+    try:
+        from backtest.trend_backtest import full_backtest_trend
+        result = full_backtest_trend(
+            symbol=request.symbol,
+            days=request.days,
+            initial_balance=request.initial_balance,
+            leverage=request.leverage
+        )
+        return result
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
+
+class ICTFullBacktestRequest(BaseModel):
+    symbol: str = "BTC/USDT"
+    days: int = 30
+    initial_balance: float = 1000.0
+    leverage: int = 10
+
+
+@router.post("/ict-full-backtest")
+def ict_full_backtest_endpoint(request: ICTFullBacktestRequest):
+    """
+    ICT/SMC v2.5 Full Strategy Backtest
+    Complete simulation with entry, exit, profit protection, PnL tracking
+    Auto-detects both LONG and SHORT opportunities
+    
+    Example:
+        POST /backtest/ict-full-backtest
+        {
+            "symbol": "BANANAS31/USDT",
+            "days": 30,
+            "initial_balance": 1000.0,
+            "leverage": 10
+        }
+    
+    Returns:
+        - Total trades (LONG + SHORT count)
+        - Win rate, profit factor
+        - Complete trade history
+        - Final balance and PnL
+    """
+    try:
+        from backtest.ict_full_backtest import full_backtest_ict
+        
+        result = full_backtest_ict(
+            symbol=request.symbol,
+            days=request.days,
+            initial_balance=request.initial_balance,
+            leverage=request.leverage
+        )
+        return result
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }

@@ -45,50 +45,48 @@ def close_quant_trade(trade_id: str):
 
 class QuantSettingsRequest(BaseModel):
     max_open_trades: Optional[int] = Field(None, ge=1, le=30)
-    max_notional: Optional[float] = Field(None, ge=10, le=5000)
-    max_loss_cap: Optional[float] = Field(None, ge=1, le=100)
-    min_rr: Optional[float] = Field(None, ge=1.0, le=5.0)
-    tp_min: Optional[float] = Field(None, ge=0.1, le=10.0)
     balance: Optional[float] = Field(None, ge=100, le=1000000)
+    leverage: Optional[int] = Field(None, ge=1, le=50)
+    max_notional: Optional[float] = Field(None, ge=10, le=5000)
+    max_loss_cap: Optional[float] = Field(None, ge=0.5, le=100)
     # Strategy enable/disable
     bb_mr_enabled: Optional[bool] = None
     ict_smc_enabled: Optional[bool] = None
-    # ICT/SMC params
-    ict_min_confluence: Optional[int] = Field(None, ge=1, le=4)
-    ict_min_rr: Optional[float] = Field(None, ge=1.0, le=10.0)
-    ict_max_sl_pct: Optional[float] = Field(None, ge=0.5, le=5.0)
-    ict_require_sweep: Optional[bool] = None
-    ict_require_displacement: Optional[bool] = None
-    ict_killzone_only: Optional[bool] = None
-    ict_max_notional: Optional[float] = Field(None, ge=10, le=5000)
-    ict_max_loss_cap: Optional[float] = Field(None, ge=1, le=100)
+    trend_v4_enabled: Optional[bool] = None
 
 @router.post("/quant/settings")
 def update_quant_settings(req: QuantSettingsRequest):
-    """Auto-Trader ayarlarını günceller (BB MR + ICT/SMC)."""
+    """Global trading ayarlarını günceller."""
     return quant_trader.update_settings(
         max_open_trades=req.max_open_trades,
+        balance=req.balance,
+        leverage=req.leverage,
         max_notional=req.max_notional,
         max_loss_cap=req.max_loss_cap,
-        min_rr=req.min_rr,
-        tp_min=req.tp_min,
-        balance=req.balance,
         bb_mr_enabled=req.bb_mr_enabled,
         ict_smc_enabled=req.ict_smc_enabled,
-        ict_min_confluence=req.ict_min_confluence,
-        ict_min_rr=req.ict_min_rr,
-        ict_max_sl_pct=req.ict_max_sl_pct,
-        ict_require_sweep=req.ict_require_sweep,
-        ict_require_displacement=req.ict_require_displacement,
-        ict_killzone_only=req.ict_killzone_only,
-        ict_max_notional=req.ict_max_notional,
-        ict_max_loss_cap=req.ict_max_loss_cap,
+        trend_v4_enabled=req.trend_v4_enabled,
     )
 
 @router.get("/quant/risk-settings")
 def get_risk_settings():
     """Mevcut risk/trade ayarlarını döndürür."""
     return quant_trader.get_risk_settings()
+
+@router.post("/quant/profile/core-v1")
+def apply_core_v1_profile():
+    """Core V1 profilini uygular: Trend-only + daha konservatif risk."""
+    return quant_trader.apply_profile_core_v1()
+
+@router.post("/quant/profile/core-v2")
+def apply_core_v2_profile():
+    """Core V2 profilini uygular: ICT multi-setup + top-50 evren."""
+    return quant_trader.apply_profile_core_v2()
+
+@router.post("/quant/profile/core-v2-aggressive")
+def apply_core_v2_aggressive_profile():
+    """Core V2 Aggressive profilini uygular: ICT-only + top-80 + daha yüksek risk."""
+    return quant_trader.apply_profile_core_v2_aggressive()
 
 class ResetRequest(BaseModel):
     new_balance: Optional[float] = 10000.0
