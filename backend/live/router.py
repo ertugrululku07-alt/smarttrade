@@ -97,9 +97,13 @@ def reset_system(req: ResetRequest):
     return quant_trader.reset_system(req.new_balance)
 
 @router.get("/quant/analytics")
-def get_analytics():
-    """Tüm kapalı trade geçmişi + aggregate metrikler."""
-    raw = quant_trader.get_analytics()
+def get_analytics(
+    strategy: Optional[str] = None, 
+    start_time: Optional[float] = None, 
+    end_time: Optional[float] = None
+):
+    """Tüm kapalı trade geçmişi + aggregate metrikler (Filtrelenebilir)."""
+    raw = quant_trader.get_analytics(strategy=strategy, start_time=start_time, end_time=end_time)
     trades = raw.get('trades', [])
 
     if not trades:

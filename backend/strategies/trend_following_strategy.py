@@ -95,13 +95,13 @@ class TrendFollowingMixin:
         'st_multiplier': 3.0,
         'min_adx': 20,
         'min_vol_ratio': 0.8,
-        'max_sl_pct': 0.02,
+        'max_sl_pct': 0.03,
         'swing_lookback': 5,
         'be_threshold': 0.03,        # +3% price profit → move SL to breakeven
-        'trail_start': 0.06,         # +6% price profit → trailing start
-        'trail_keep': 0.55,          # Lock 55% of peak profit (was 35%)
+        'trail_start': 0.05,         # +5% price profit → trailing start (Optimized)
+        'trail_keep': 0.35,          # Lock 35% of peak profit (Optimized)
         'timeout_hours': 72,
-        'max_loss_cap': 4.0,         # $4 max loss per trade
+        'max_loss_cap': 8.0,         # $8 max loss per trade (Optimized)
         'max_notional': 300.0,
         'cooldown_hours': 2,
     }

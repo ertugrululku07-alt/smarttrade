@@ -1469,7 +1469,7 @@ class LivePaperTrader(TrendFollowingMixin, VWAPScalpingMixin, ICTSMCStrategyMixi
             "qty": qty,
             "margin": margin,
             "original_margin": margin,
-            "entry_time": datetime.now().strftime("%H:%M:%S"),
+            "entry_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "entry_timestamp": time.time(),
             "tp_price": tp_price,
             "sl_price": sl_price,
@@ -1518,7 +1518,8 @@ class LivePaperTrader(TrendFollowingMixin, VWAPScalpingMixin, ICTSMCStrategyMixi
             total_pnl = pnl + partial_profit
 
             t['exit_price'] = exit_price
-            t['exit_time'] = datetime.now().strftime("%H:%M:%S")
+            t['exit_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            t['exit_timestamp'] = time.time()
             t['pnl'] = total_pnl
             t['reason'] = reason
 
@@ -1900,11 +1901,24 @@ class LivePaperTrader(TrendFollowingMixin, VWAPScalpingMixin, ICTSMCStrategyMixi
         self.log(f"[RESET] System reset. Balance: ${new_balance:.2f}")
         return {"success": True, "message": f"System reset. Balance: ${new_balance:.2f}"}
 
-    def get_analytics(self):
+    def get_analytics(self, strategy: str = None, start_time: float = None, end_time: float = None):
         with self.trades_lock:
             all_closed = list(self.closed_trades)
+        
         result = []
         for t in all_closed:
+            # Filters
+            t_strat = t.get('strategy', 'unknown')
+            t_entry_ts = t.get('entry_timestamp', 0)
+            t_exit_ts = t.get('exit_timestamp', t_entry_ts)
+            
+            if strategy and strategy.lower() not in t_strat.lower():
+                continue
+            if start_time and t_entry_ts < start_time:
+                continue
+            if end_time and t_exit_ts > end_time:
+                continue
+                
             pnl = t.get('pnl', 0)
             margin = t.get('original_margin', t.get('margin', 0))
             pnl_pct = (pnl / margin * 100) if margin > 0 else 0
