@@ -1,0 +1,128 @@
+{
+  "meta": {
+    "symbols": 30,
+    "days": 120
+  },
+  "results": [
+    {
+      "preset": "B_consistent",
+      "params": {
+        "MIN_RR": 1.5,
+        "MAX_LOSS_DOLLAR": 5.2,
+        "NOTIONAL_CAP": 280.0,
+        "BALANCE_PCT": 0.16,
+        "POI_PROXIMITY_ATR": 1.7,
+        "COOLDOWN_BARS": 3,
+        "TRAIL_START_PCT": 0.022,
+        "TRAIL_DIST_PCT": 0.0055,
+        "max_open": 4
+      },
+      "portfolio": {
+        "final_balance": 1091.4,
+        "return_pct": 9.14,
+        "max_dd_pct": 25.69,
+        "avg_monthly_pct": 2.86,
+        "median_monthly_pct": -0.16,
+        "negative_months": 3,
+        "month_count": 5
+      },
+      "elapsed_sec": 402.9
+    },
+    {
+      "preset": "D_tight_risk",
+      "params": {
+        "MIN_RR": 1.55,
+        "MAX_LOSS_DOLLAR": 4.8,
+        "NOTIONAL_CAP": 260.0,
+        "BALANCE_PCT": 0.15,
+        "POI_PROXIMITY_ATR": 1.6,
+        "COOLDOWN_BARS": 4,
+        "TRAIL_START_PCT": 0.022,
+        "TRAIL_DIST_PCT": 0.005,
+        "max_open": 4
+      },
+      "portfolio": {
+        "final_balance": 1000.0,
+        "return_pct": 0.0,
+        "max_dd_pct": 0.0,
+        "avg_monthly_pct": 0,
+        "median_monthly_pct": 0,
+        "negative_months": 0,
+        "month_count": 0
+      },
+      "elapsed_sec": 22.6
+    },
+    {
+      "preset": "E_mid",
+      "params": {
+        "MIN_RR": 1.48,
+        "MAX_LOSS_DOLLAR": 5.5,
+        "NOTIONAL_CAP": 290.0,
+        "BALANCE_PCT": 0.17,
+        "POI_PROXIMITY_ATR": 1.75,
+        "COOLDOWN_BARS": 3,
+        "TRAIL_START_PCT": 0.021,
+        "TRAIL_DIST_PCT": 0.0058,
+        "max_open": 5
+      },
+      "portfolio": {
+        "final_balance": 1000.0,
+        "return_pct": 0.0,
+        "max_dd_pct": 0.0,
+        "avg_monthly_pct": 0,
+        "median_monthly_pct": 0,
+        "negative_months": 0,
+        "month_count": 0
+      },
+      "elapsed_sec": 1.1
+    },
+    {
+      "preset": "A_balanced_aggr",
+      "params": {
+        "MIN_RR": 1.45,
+        "MAX_LOSS_DOLLAR": 5.8,
+        "NOTIONAL_CAP": 300.0,
+        "BALANCE_PCT": 0.17,
+        "POI_PROXIMITY_ATR": 1.8,
+        "COOLDOWN_BARS": 3,
+        "TRAIL_START_PCT": 0.02,
+        "TRAIL_DIST_PCT": 0.006,
+        "max_open": 5
+      },
+      "portfolio": {
+        "final_balance": 1244.74,
+        "return_pct": 24.47,
+        "max_dd_pct": 26.1,
+        "avg_monthly_pct": 6.48,
+        "median_monthly_pct": 0.89,
+        "negative_months": 2,
+        "month_count": 5
+      },
+      "elapsed_sec": 181.3
+    },
+    {
+      "preset": "C_growth",
+      "params": {
+        "MIN_RR": 1.4,
+        "MAX_LOSS_DOLLAR": 6.2,
+        "NOTIONAL_CAP": 330.0,
+        "BALANCE_PCT": 0.19,
+        "POI_PROXIMITY_ATR": 2.0,
+        "COOLDOWN_BARS": 2,
+        "TRAIL_START_PCT": 0.018,
+        "TRAIL_DIST_PCT": 0.007,
+        "max_open": 6
+      },
+      "portfolio": {
+        "final_balance": 1072.14,
+        "return_pct": 7.21,
+        "max_dd_pct": 38.56,
+        "avg_monthly_pct": 2.58,
+        "median_monthly_pct": -1.82,
+        "negative_months": 3,
+        "month_count": 5
+      },
+      "elapsed_sec": 455.0
+    }
+  ]
+}

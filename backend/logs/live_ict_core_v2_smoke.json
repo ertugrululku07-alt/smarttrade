@@ -1,0 +1,159 @@
+{
+  "summary": {
+    "symbols": 30,
+    "ok": 29,
+    "signals": 0
+  },
+  "rows": [
+    {
+      "symbol": "BTC/USDT",
+      "ok": true,
+      "signal": false
+    },
+    {
+      "symbol": "ETH/USDT",
+      "ok": true,
+      "signal": false
+    },
+    {
+      "symbol": "NIGHT/USDT",
+      "ok": true,
+      "signal": false
+    },
+    {
+      "symbol": "SOL/USDT",
+      "ok": true,
+      "signal": false
+    },
+    {
+      "symbol": "XRP/USDT",
+      "ok": true,
+      "signal": false
+    },
+    {
+      "symbol": "PAXG/USDT",
+      "ok": true,
+      "signal": false
+    },
+    {
+      "symbol": "OPN/USDT",
+      "ok": true,
+      "signal": false
+    },
+    {
+      "symbol": "BNB/USDT",
+      "ok": true,
+      "signal": false
+    },
+    {
+      "symbol": "DOGE/USDT",
+      "ok": true,
+      "signal": false
+    },
+    {
+      "symbol": "ZEC/USDT",
+      "ok": true,
+      "signal": false
+    },
+    {
+      "symbol": "KITE/USDT",
+      "ok": true,
+      "signal": false
+    },
+    {
+      "symbol": "TAO/USDT",
+      "ok": true,
+      "signal": false
+    },
+    {
+      "symbol": "U/USDT",
+      "ok": true,
+      "signal": false
+    },
+    {
+      "symbol": "TRX/USDT",
+      "ok": true,
+      "signal": false
+    },
+    {
+      "symbol": "DEGO/USDT",
+      "ok": true,
+      "signal": false
+    },
+    {
+      "symbol": "LINK/USDT",
+      "ok": true,
+      "signal": false
+    },
+    {
+      "symbol": "PEPE/USDT",
+      "ok": true,
+      "signal": false
+    },
+    {
+      "symbol": "EUR/USDT",
+      "ok": true,
+      "signal": false
+    },
+    {
+      "symbol": "ETHFI/USDT",
+      "ok": true,
+      "signal": false
+    },
+    {
+      "symbol": "ADA/USDT",
+      "ok": true,
+      "signal": false
+    },
+    {
+      "symbol": "SUI/USDT",
+      "ok": true,
+      "signal": false
+    },
+    {
+      "symbol": "WLD/USDT",
+      "ok": true,
+      "signal": false
+    },
+    {
+      "symbol": "NEAR/USDT",
+      "ok": true,
+      "signal": false
+    },
+    {
+      "symbol": "BARD/USDT",
+      "ok": true,
+      "signal": false
+    },
+    {
+      "symbol": "ASTER/USDT",
+      "ok": true,
+      "signal": false
+    },
+    {
+      "symbol": "ROBO/USDT",
+      "ok": true,
+      "signal": false
+    },
+    {
+      "symbol": "KAT/USDT",
+      "ok": false,
+      "err": "no_1h"
+    },
+    {
+      "symbol": "RLUSD/USDT",
+      "ok": true,
+      "signal": false
+    },
+    {
+      "symbol": "LTC/USDT",
+      "ok": true,
+      "signal": false
+    },
+    {
+      "symbol": "FET/USDT",
+      "ok": true,
+      "signal": false
+    }
+  ]
+}

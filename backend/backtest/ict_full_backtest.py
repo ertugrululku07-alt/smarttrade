@@ -40,6 +40,7 @@ class ICTFullBacktest:
     ENTRY_MAX_EMA21_EXT = 0.045
     EARLY_CUT_BARS = 10
     EARLY_CUT_R = 0.75
+    SL_BUFFER_ATR = 1.0
 
     def __init__(self, initial_balance: float = 1000.0, leverage: int = 10):
         self.initial_balance = initial_balance
@@ -239,7 +240,8 @@ class ICTFullBacktest:
         # ── 4. Structural SL ──
         sl = ict_core.get_sweep_sl(
             direction, analysis.sweep_level, cp, atr,
-            analysis.swing_highs, analysis.swing_lows
+            analysis.swing_highs, analysis.swing_lows,
+            sl_buffer_atr=self.SL_BUFFER_ATR
         )
 
         max_sl_pct = self.MAX_SL_PCT
@@ -431,10 +433,13 @@ class ICTFullBacktest:
     # ══════════════════════════════════════════════════════════════
     # MAIN BACKTEST LOOP
     # ══════════════════════════════════════════════════════════════
-    def run_backtest(self, symbol: str, days: int = 30) -> Dict:
-        fetcher = DataFetcher('binance')
-        limit = max(days * 24 + self.LOOKBACK, 200)
-        df = fetcher.fetch_ohlcv(symbol, '1h', limit=limit)
+    def run_backtest(self, symbol: str, days: int = 30, pre_fetched_df: Optional[pd.DataFrame] = None) -> Dict:
+        if pre_fetched_df is not None:
+            df = pre_fetched_df.copy()
+        else:
+            fetcher = DataFetcher('binance')
+            limit = max(days * 24 + self.LOOKBACK, 200)
+            df = fetcher.fetch_ohlcv(symbol, '1h', limit=limit)
 
         if df is None or len(df) < 100:
             return {'success': False, 'error': 'Insufficient data'}
@@ -541,10 +546,10 @@ class ICTFullBacktest:
 
 
 def full_backtest_ict(symbol: str, days: int = 30, initial_balance: float = 1000.0,
-                      leverage: int = 10) -> Dict:
+                      leverage: int = 10, pre_fetched_df: Optional[pd.DataFrame] = None) -> Dict:
     try:
         bt = ICTFullBacktest(initial_balance=initial_balance, leverage=leverage)
-        return bt.run_backtest(symbol, days)
+        return bt.run_backtest(symbol, days, pre_fetched_df=pre_fetched_df)
     except Exception as e:
         import traceback
         return {'success': False, 'error': str(e), 'traceback': traceback.format_exc()}

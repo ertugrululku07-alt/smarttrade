@@ -1,0 +1,60 @@
+{
+  "updated_at": "2026-03-19T20:58:32.570775Z",
+  "elapsed_minutes": 82.01,
+  "status": {
+    "status": "Running",
+    "is_running": true,
+    "balance": 1000.0,
+    "open_trades_count": 0,
+    "pending_orders_count": 0,
+    "open_trades": [],
+    "closed_trades_count": 0,
+    "closed_trades": [],
+    "recent_logs": [
+      {
+        "id": "08a1ce2b",
+        "text": "[2026-03-19 23:57:42] [PERF] ICT A\u015fama-1: 0 aday, 0 elendi"
+      },
+      {
+        "id": "a6b2962a",
+        "text": "[2026-03-19 23:57:37] [SCAN] ICT Grup 1/1: 50 coin (0-49)"
+      },
+      {
+        "id": "9d274478",
+        "text": "[2026-03-19 23:57:37] [SEARCH] ICT/SMC v2.4 scanning 50 markets..."
+      },
+      {
+        "id": "e61ace6a",
+        "text": "[2026-03-19 23:55:36] [PERF] ICT A\u015fama-1: 0 aday, 0 elendi"
+      },
+      {
+        "id": "bacfa8d3",
+        "text": "[2026-03-19 23:55:35] [SCAN] ICT Grup 1/1: 50 coin (0-49)"
+      },
+      {
+        "id": "4bf930ed",
+        "text": "[2026-03-19 23:55:35] [SEARCH] ICT/SMC v2.4 scanning 50 markets..."
+      },
+      {
+        "id": "360e5f5f",
+        "text": "[2026-03-19 23:53:34] [PERF] ICT A\u015fama-1: 0 aday, 0 elendi"
+      },
+      {
+        "id": "14a42917",
+        "text": "[2026-03-19 23:53:23] [SCAN] ICT Grup 1/1: 50 coin (0-49)"
+      },
+      {
+        "id": "73a1f08b",
+        "text": "[2026-03-19 23:53:23] [SEARCH] ICT/SMC v2.4 scanning 50 markets..."
+      },
+      {
+        "id": "6b97a34b",
+        "text": "[2026-03-19 23:51:22] [PERF] ICT A\u015fama-1: 0 aday, 0 elendi"
+      }
+    ],
+    "scanned_markets_count": 50,
+    "max_open_trades_limit": 4
+  },
+  "analytics": {},
+  "trades_count": 0
+}

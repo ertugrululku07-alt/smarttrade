@@ -156,8 +156,8 @@ class LivePaperTrader(TrendFollowingMixin, VWAPScalpingMixin, ICTSMCStrategyMixi
             'require_sweep': True,    # Likidite sweep zorunlu mu
             'require_displacement': False,  # Displacement zorunlu mu
             'killzone_only': False,   # Sadece London/NY killzone
-            'max_notional': 300.0,    # ICT trade başına max notional
-            'max_loss_cap': 5.8,      # ICT trade başına max kayıp
+            'max_notional': 350.0,    # ICT trade başına max notional (Optimizasyon: 350.0)
+            'max_loss_cap': 8.0,      # ICT trade başına max kayıp (Optimizasyon: 8.0)
             'sr_proximity_limit': 0.05,  # HTF support/resistance yakınlık eşiği
             'max_poi_distance_atr': 5.0,
             'max_zone_age_bars': 72,
@@ -1672,8 +1672,8 @@ class LivePaperTrader(TrendFollowingMixin, VWAPScalpingMixin, ICTSMCStrategyMixi
 
             self._user_max_notional = 300.0
             self._user_max_loss_cap = 5.8
-            self._ICT_PARAMS['max_notional'] = 300.0
-            self._ICT_PARAMS['max_loss_cap'] = 5.8
+            self._ICT_PARAMS['max_notional'] = 350.0
+            self._ICT_PARAMS['max_loss_cap'] = 8.0
             self._ICT_PARAMS['min_rr'] = 1.45
             self._ICT_PARAMS['max_sl_pct'] = 2.5
             self._ICT_PARAMS['min_confluence'] = 2
@@ -1708,7 +1708,7 @@ class LivePaperTrader(TrendFollowingMixin, VWAPScalpingMixin, ICTSMCStrategyMixi
         self._force_save()
         self.log(
             "[PROFILE] Core V2 Aggressive applied: ICT-only, max_trades=5, "
-            f"symbols={len(self.scanned_symbols)}, leverage<=10, notional=$300, max_loss=$5.8"
+            f"symbols={len(self.scanned_symbols)}, leverage<=10, notional=$350, max_loss=$8.0"
         )
         return {
             "success": True,
@@ -1752,8 +1752,8 @@ class LivePaperTrader(TrendFollowingMixin, VWAPScalpingMixin, ICTSMCStrategyMixi
 
             self._user_max_notional = 300.0
             self._user_max_loss_cap = 5.8
-            self._ICT_PARAMS['max_notional'] = 300.0
-            self._ICT_PARAMS['max_loss_cap'] = 5.8
+            self._ICT_PARAMS['max_notional'] = 350.0
+            self._ICT_PARAMS['max_loss_cap'] = 8.0
             self._ICT_PARAMS['min_rr'] = 1.45
             self._ICT_PARAMS['max_sl_pct'] = 2.5
             self._ICT_PARAMS['min_confluence'] = 2

@@ -1177,13 +1177,14 @@ def get_sweep_sl(
     atr: float,
     swing_highs: List[SwingPoint],
     swing_lows: List[SwingPoint],
+    sl_buffer_atr: float = 1.0,
 ) -> float:
     """
     Sweep bazlı SL: Sweep seviyesinin ötesi.
     LONG  → sweep low altı + buffer
     SHORT → sweep high üstü + buffer
     """
-    buffer = atr * 0.3
+    buffer = atr * sl_buffer_atr
 
     if direction == 'LONG':
         if sweep_level > 0:

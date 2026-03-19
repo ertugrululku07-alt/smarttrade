@@ -1,0 +1,115 @@
+{
+  "summary": {
+    "symbols": 12,
+    "ok": 11,
+    "tested": 1320,
+    "signals": 2,
+    "signal_rate_pct": 0.15
+  },
+  "rows": [
+    {
+      "symbol": "BTC/USDT",
+      "ok": true,
+      "tested": 120,
+      "signals": 0,
+      "signal_rate_pct": 0.0,
+      "avg_q": 0.0,
+      "avg_rr": 0.0
+    },
+    {
+      "symbol": "ETH/USDT",
+      "ok": true,
+      "tested": 120,
+      "signals": 0,
+      "signal_rate_pct": 0.0,
+      "avg_q": 0.0,
+      "avg_rr": 0.0
+    },
+    {
+      "symbol": "NIGHT/USDT",
+      "ok": false,
+      "err": "no_1h"
+    },
+    {
+      "symbol": "SOL/USDT",
+      "ok": true,
+      "tested": 120,
+      "signals": 0,
+      "signal_rate_pct": 0.0,
+      "avg_q": 0.0,
+      "avg_rr": 0.0
+    },
+    {
+      "symbol": "XRP/USDT",
+      "ok": true,
+      "tested": 120,
+      "signals": 1,
+      "signal_rate_pct": 0.83,
+      "avg_q": 13.0,
+      "avg_rr": 2.0
+    },
+    {
+      "symbol": "PAXG/USDT",
+      "ok": true,
+      "tested": 120,
+      "signals": 0,
+      "signal_rate_pct": 0.0,
+      "avg_q": 0.0,
+      "avg_rr": 0.0
+    },
+    {
+      "symbol": "OPN/USDT",
+      "ok": true,
+      "tested": 120,
+      "signals": 0,
+      "signal_rate_pct": 0.0,
+      "avg_q": 0.0,
+      "avg_rr": 0.0
+    },
+    {
+      "symbol": "BNB/USDT",
+      "ok": true,
+      "tested": 120,
+      "signals": 0,
+      "signal_rate_pct": 0.0,
+      "avg_q": 0.0,
+      "avg_rr": 0.0
+    },
+    {
+      "symbol": "DOGE/USDT",
+      "ok": true,
+      "tested": 120,
+      "signals": 0,
+      "signal_rate_pct": 0.0,
+      "avg_q": 0.0,
+      "avg_rr": 0.0
+    },
+    {
+      "symbol": "ZEC/USDT",
+      "ok": true,
+      "tested": 120,
+      "signals": 0,
+      "signal_rate_pct": 0.0,
+      "avg_q": 0.0,
+      "avg_rr": 0.0
+    },
+    {
+      "symbol": "KITE/USDT",
+      "ok": true,
+      "tested": 120,
+      "signals": 1,
+      "signal_rate_pct": 0.83,
+      "avg_q": 14.0,
+      "avg_rr": 2.0
+    },
+    {
+      "symbol": "TAO/USDT",
+      "ok": true,
+      "tested": 120,
+      "signals": 0,
+      "signal_rate_pct": 0.0,
+      "avg_q": 0.0,
+      "avg_rr": 0.0
+    }
+  ]
+}

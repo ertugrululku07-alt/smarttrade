@@ -1,0 +1,47 @@
+[
+  {
+    "preset": "p2_mid_relax_no_earlycut",
+    "trades": 2953,
+    "wr": 30.61,
+    "slr": 127.67,
+    "ret": 10.64,
+    "dd": 11.48,
+    "score": 77.68
+  },
+  {
+    "preset": "p1_relax_entry",
+    "trades": 2979,
+    "wr": 30.18,
+    "slr": 127.45,
+    "ret": 10.35,
+    "dd": 11.76,
+    "score": 74.1
+  },
+  {
+    "preset": "p3_keep_filters_tighten_trail",
+    "trades": 0,
+    "wr": 0,
+    "slr": 0,
+    "ret": 0.0,
+    "dd": 0.0,
+    "score": 0.0
+  },
+  {
+    "preset": "p4_restore_sl_style",
+    "trades": 0,
+    "wr": 0,
+    "slr": 0,
+    "ret": 0.0,
+    "dd": 0.0,
+    "score": 0.0
+  },
+  {
+    "preset": "p0_current",
+    "trades": 2924,
+    "wr": 29.96,
+    "slr": 126.32,
+    "ret": 0.75,
+    "dd": 14.89,
+    "score": -29.73
+  }
+]

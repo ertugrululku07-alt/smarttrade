@@ -124,13 +124,13 @@ class PositionManagerV3:
     Hedef: avg win ~$5-7, avg loss ~$4-5 → R:R ~1.2:1
     """
 
-    # ROI% eşikleri (leverage dahil) — v3.4 tight SL
-    ROI_STAGE1 = 1.0     # +1.0% ROI → breakeven (hızlı koruma)
-    ROI_STAGE2 = 2.0     # +2% ROI → partial + wide trail
-    ROI_STAGE3 = 4.0     # +4% ROI → partial + normal trail
-    ROI_STAGE4 = 7.0     # +7% ROI → partial + tight trail
+    # ROI% eşikleri (leverage dahil) — v3.4 ICT Optimized
+    ROI_STAGE1 = 5.0     # +5% ROI → breakeven
+    ROI_STAGE2 = 10.0    # +10% ROI → partial + wide trail
+    ROI_STAGE3 = 15.0    # +15% ROI → partial + normal trail
+    ROI_STAGE4 = 20.0    # +20% ROI → partial + tight trail
     MAX_LOSS_ROI = -2.0   # -%2.0 ROI → force exit (sıkı kayıp kontrolü)
-    PEAK_DD_MIN = 4.0     # PeakDD sadece peak > +4% olunca aktif
+    PEAK_DD_MIN = 6.0     # PeakDD peak > +6% olunca aktif
     PEAK_DRAWDOWN = 0.50  # Kâr zirvesinden %50 geri çekilme → exit
 
     def __init__(self, trade_data, atr, leverage=10):

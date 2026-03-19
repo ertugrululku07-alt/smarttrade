@@ -1,0 +1,13 @@
+{
+  "generated_at": "2026-03-19T19:39:58.989590Z",
+  "run_id": "ict24h_20260319_223624",
+  "elapsed_minutes": 3.0,
+  "kpi": {
+    "balance": 1000.0,
+    "open_trades_count": 0,
+    "closed_trades_count": 0,
+    "trades_count": 0
+  },
+  "loss_reason_breakdown": {},
+  "loss_samples": []
+}

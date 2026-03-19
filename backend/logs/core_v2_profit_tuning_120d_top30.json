@@ -1,0 +1,168 @@
+{
+  "meta": {
+    "symbols": 30,
+    "days": 120
+  },
+  "results": [
+    {
+      "preset": "A_baseline",
+      "params": {
+        "SL_BUFFER_ATR": 1.0,
+        "TRAIL_START_PCT": 0.02,
+        "TRAIL_DIST_PCT": 0.006,
+        "MIN_RR": 1.45,
+        "MAX_LOSS_DOLLAR": 5.8
+      },
+      "portfolio": {
+        "final_balance": 1618.68,
+        "return_pct": 61.87,
+        "max_dd_pct": 21.17,
+        "avg_monthly_pct": 12.8,
+        "median_monthly_pct": 16.07,
+        "negative_months": 2,
+        "month_count": 5
+      },
+      "elapsed_sec": 141.2
+    },
+    {
+      "preset": "G_baseline_boosted_size",
+      "params": {
+        "SL_BUFFER_ATR": 1.0,
+        "TRAIL_START_PCT": 0.02,
+        "TRAIL_DIST_PCT": 0.006,
+        "MIN_RR": 1.45,
+        "MAX_LOSS_DOLLAR": 8.0
+      },
+      "portfolio": {
+        "final_balance": 1636.0,
+        "return_pct": 63.6,
+        "max_dd_pct": 20.97,
+        "avg_monthly_pct": 13.06,
+        "median_monthly_pct": 16.03,
+        "negative_months": 2,
+        "month_count": 5
+      },
+      "elapsed_sec": 125.6
+    },
+    {
+      "preset": "B_wide_sl_only",
+      "params": {
+        "SL_BUFFER_ATR": 1.5,
+        "TRAIL_START_PCT": 0.02,
+        "TRAIL_DIST_PCT": 0.006,
+        "MIN_RR": 1.45,
+        "MAX_LOSS_DOLLAR": 5.8
+      },
+      "portfolio": {
+        "final_balance": 1486.78,
+        "return_pct": 48.68,
+        "max_dd_pct": 16.37,
+        "avg_monthly_pct": 10.56,
+        "median_monthly_pct": 14.89,
+        "negative_months": 2,
+        "month_count": 5
+      },
+      "elapsed_sec": 128.4
+    },
+    {
+      "preset": "H_baseline_loose_rr",
+      "params": {
+        "SL_BUFFER_ATR": 1.2,
+        "TRAIL_START_PCT": 0.025,
+        "TRAIL_DIST_PCT": 0.008,
+        "MIN_RR": 1.25,
+        "MAX_LOSS_DOLLAR": 7.0
+      },
+      "portfolio": {
+        "final_balance": 1046.03,
+        "return_pct": 4.6,
+        "max_dd_pct": 30.21,
+        "avg_monthly_pct": 3.66,
+        "median_monthly_pct": 3.74,
+        "negative_months": 2,
+        "month_count": 5
+      },
+      "elapsed_sec": 124.1
+    },
+    {
+      "preset": "C_loose_trail_only",
+      "params": {
+        "SL_BUFFER_ATR": 1.0,
+        "TRAIL_START_PCT": 0.03,
+        "TRAIL_DIST_PCT": 0.015,
+        "MIN_RR": 1.45,
+        "MAX_LOSS_DOLLAR": 5.8
+      },
+      "portfolio": {
+        "final_balance": 777.36,
+        "return_pct": -22.26,
+        "max_dd_pct": 33.44,
+        "avg_monthly_pct": -3.53,
+        "median_monthly_pct": -2.11,
+        "negative_months": 3,
+        "month_count": 5
+      },
+      "elapsed_sec": 107.4
+    },
+    {
+      "preset": "D_wide_sl_loose_trail",
+      "params": {
+        "SL_BUFFER_ATR": 1.5,
+        "TRAIL_START_PCT": 0.03,
+        "TRAIL_DIST_PCT": 0.015,
+        "MIN_RR": 1.45,
+        "MAX_LOSS_DOLLAR": 5.8
+      },
+      "portfolio": {
+        "final_balance": 672.41,
+        "return_pct": -32.76,
+        "max_dd_pct": 38.98,
+        "avg_monthly_pct": -6.85,
+        "median_monthly_pct": -2.2,
+        "negative_months": 3,
+        "month_count": 5
+      },
+      "elapsed_sec": 120.9
+    },
+    {
+      "preset": "F_max_breathing",
+      "params": {
+        "SL_BUFFER_ATR": 2.0,
+        "TRAIL_START_PCT": 0.05,
+        "TRAIL_DIST_PCT": 0.025,
+        "MIN_RR": 1.5,
+        "MAX_LOSS_DOLLAR": 5.0
+      },
+      "portfolio": {
+        "final_balance": 722.19,
+        "return_pct": -27.78,
+        "max_dd_pct": 40.07,
+        "avg_monthly_pct": -5.19,
+        "median_monthly_pct": -5.65,
+        "negative_months": 4,
+        "month_count": 5
+      },
+      "elapsed_sec": 150.8
+    },
+    {
+      "preset": "E_aggressive_growth",
+      "params": {
+        "SL_BUFFER_ATR": 1.2,
+        "TRAIL_START_PCT": 0.04,
+        "TRAIL_DIST_PCT": 0.02,
+        "MIN_RR": 1.2,
+        "MAX_LOSS_DOLLAR": 8.0
+      },
+      "portfolio": {
+        "final_balance": 586.91,
+        "return_pct": -41.31,
+        "max_dd_pct": 49.66,
+        "avg_monthly_pct": -10.36,
+        "median_monthly_pct": -12.08,
+        "negative_months": 5,
+        "month_count": 5
+      },
+      "elapsed_sec": 97.9
+    }
+  ]
+}

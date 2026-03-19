@@ -1,0 +1,21 @@
+==================================================
+         SIMULATION REPORT (180 DAYS)          
+==================================================
+Parametreler:
+- Süre: 180 Gün
+- Başlangıç Bakiyesi: $1000
+- Kaldıraç: 10x
+- İşlem Başına Büyüklük: $200 Margin ($2000 Notional)
+- Sembol Sayısı: 10 En Yüksek Hacimli Coin
+--------------------------------------------------
+Sonuçlar:
+- Toplam İşlem Sayısı: 2924 (Yetersiz Bakiye Nedeniyle Atlanan: 85)
+- Başarılı İşlem: 754
+- Başarısız İşlem: 2170
+- Kazanma Oranı: %25.79
+- Maksimum Düşüş (Drawdown): %91.77
+--------------------------------------------------
+- Başlangıç Bakiyesi: $1000.00
+- Bitiş Bakiyesi: $543.72
+- Net Kar/Zarar (PnL): $-456.28 (%-45.63)
+==================================================

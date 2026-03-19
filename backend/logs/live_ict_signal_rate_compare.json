@@ -1,0 +1,156 @@
+{
+  "old_like": {
+    "tested": 1320,
+    "signals": 2,
+    "rate": 0.15,
+    "by_symbol": [
+      {
+        "symbol": "BTC/USDT",
+        "ok": true,
+        "signals": 0,
+        "tested": 120
+      },
+      {
+        "symbol": "ETH/USDT",
+        "ok": true,
+        "signals": 0,
+        "tested": 120
+      },
+      {
+        "symbol": "NIGHT/USDT",
+        "ok": false
+      },
+      {
+        "symbol": "SOL/USDT",
+        "ok": true,
+        "signals": 0,
+        "tested": 120
+      },
+      {
+        "symbol": "XRP/USDT",
+        "ok": true,
+        "signals": 1,
+        "tested": 120
+      },
+      {
+        "symbol": "PAXG/USDT",
+        "ok": true,
+        "signals": 0,
+        "tested": 120
+      },
+      {
+        "symbol": "OPN/USDT",
+        "ok": true,
+        "signals": 0,
+        "tested": 120
+      },
+      {
+        "symbol": "BNB/USDT",
+        "ok": true,
+        "signals": 0,
+        "tested": 120
+      },
+      {
+        "symbol": "DOGE/USDT",
+        "ok": true,
+        "signals": 0,
+        "tested": 120
+      },
+      {
+        "symbol": "ZEC/USDT",
+        "ok": true,
+        "signals": 0,
+        "tested": 120
+      },
+      {
+        "symbol": "KITE/USDT",
+        "ok": true,
+        "signals": 1,
+        "tested": 120
+      },
+      {
+        "symbol": "TAO/USDT",
+        "ok": true,
+        "signals": 0,
+        "tested": 120
+      }
+    ]
+  },
+  "new_live": {
+    "tested": 1320,
+    "signals": 2,
+    "rate": 0.15,
+    "by_symbol": [
+      {
+        "symbol": "BTC/USDT",
+        "ok": true,
+        "signals": 0,
+        "tested": 120
+      },
+      {
+        "symbol": "ETH/USDT",
+        "ok": true,
+        "signals": 0,
+        "tested": 120
+      },
+      {
+        "symbol": "NIGHT/USDT",
+        "ok": false
+      },
+      {
+        "symbol": "SOL/USDT",
+        "ok": true,
+        "signals": 0,
+        "tested": 120
+      },
+      {
+        "symbol": "XRP/USDT",
+        "ok": true,
+        "signals": 1,
+        "tested": 120
+      },
+      {
+        "symbol": "PAXG/USDT",
+        "ok": true,
+        "signals": 0,
+        "tested": 120
+      },
+      {
+        "symbol": "OPN/USDT",
+        "ok": true,
+        "signals": 0,
+        "tested": 120
+      },
+      {
+        "symbol": "BNB/USDT",
+        "ok": true,
+        "signals": 0,
+        "tested": 120
+      },
+      {
+        "symbol": "DOGE/USDT",
+        "ok": true,
+        "signals": 0,
+        "tested": 120
+      },
+      {
+        "symbol": "ZEC/USDT",
+        "ok": true,
+        "signals": 0,
+        "tested": 120
+      },
+      {
+        "symbol": "KITE/USDT",
+        "ok": true,
+        "signals": 1,
+        "tested": 120
+      },
+      {
+        "symbol": "TAO/USDT",
+        "ok": true,
+        "signals": 0,
+        "tested": 120
+      }
+    ]
+  }
+}
