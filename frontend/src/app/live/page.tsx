@@ -117,6 +117,8 @@ export default function LiveTradingPage() {
     const [filterStrategy, setFilterStrategy] = useState('all');
     const [filterSide, setFilterSide] = useState('all');
     const [filterResult, setFilterResult] = useState('all');
+    const [filterStartDate, setFilterStartDate] = useState('');
+    const [filterEndDate, setFilterEndDate] = useState('');
     const [resetBalance, setResetBalance] = useState(10000);
     const [showResetConfirm, setShowResetConfirm] = useState(false);
 
@@ -157,7 +159,18 @@ export default function LiveTradingPage() {
 
     const fetchAnalytics = async () => {
         try {
-            const res = await fetch(getApiUrl("/live/quant/analytics"));
+            const params = new URLSearchParams();
+            if (filterStartDate) {
+                const ts = Math.floor(new Date(filterStartDate).getTime() / 1000);
+                if (!isNaN(ts)) params.append('start_time', ts.toString());
+            }
+            if (filterEndDate) {
+                const ts = Math.floor(new Date(filterEndDate).getTime() / 1000) + 86399; // end of day
+                if (!isNaN(ts)) params.append('end_time', ts.toString());
+            }
+            
+            const url = `/live/quant/analytics${params.toString() ? '?' + params.toString() : ''}`;
+            const res = await fetch(getApiUrl(url));
             if (res.ok) {
                 const data = await res.json();
                 setAnalyticsData(data.trades || []);
@@ -528,6 +541,14 @@ export default function LiveTradingPage() {
                                 <option value="win">Wins</option>
                                 <option value="loss">Losses</option>
                             </select>
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            <label style={{ fontSize: '9px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Start Date</label>
+                            <input type="date" value={filterStartDate} onChange={e => setFilterStartDate(e.target.value)} style={{ padding: '4px 8px', borderRadius: '6px', border: '1px solid var(--border)', background: 'rgba(0,0,0,0.3)', color: 'var(--text-primary)', fontSize: '12px', height: '28px' }} />
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            <label style={{ fontSize: '9px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>End Date</label>
+                            <input type="date" value={filterEndDate} onChange={e => setFilterEndDate(e.target.value)} style={{ padding: '4px 8px', borderRadius: '6px', border: '1px solid var(--border)', background: 'rgba(0,0,0,0.3)', color: 'var(--text-primary)', fontSize: '12px', height: '28px' }} />
                         </div>
                         <button onClick={fetchAnalytics} style={{ padding: '5px 14px', borderRadius: '6px', border: '1px solid rgba(79,158,255,0.3)', background: 'rgba(79,158,255,0.1)', color: 'var(--accent-blue)', fontSize: '11px', fontWeight: 600, cursor: 'pointer', marginTop: 12 }}>Refresh</button>
                     </div>
