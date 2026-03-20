@@ -1419,16 +1419,33 @@ class ICTSMCStrategyMixin:
                 self.log(f"[EMERGENCY-BE] ICT {symbol}: SL→{emergency_sl:.6f} @ +{pnl_pct:.1f}% ROI")
                 self._force_save()
         
-        # If profit > 8% ROI, protect 50% of profit
-        if pnl_pct >= 8.0 and not t.get('_ict_emergency_trail_set'):
-            # Protect half the profit
-            protected_price = entry + (current_price - entry) * 0.5 if side == 'LONG' else entry - (entry - current_price) * 0.5
+        # --- Advanced Tiered ROI Profit Protection ---
+        # Continuously ratchet SL based on peak price instead of single 8% lock
+        peak_price = max(current_price, t.get('_ict_peak_price', entry)) if side == 'LONG' else min(current_price, t.get('_ict_peak_price', entry))
+        t['_ict_peak_price'] = peak_price
+        peak_pnl_pct = abs(peak_price - entry) / entry
+        
+        keep_ratio = 0.0
+        if peak_pnl_pct >= 0.12:    # +12% price move -> lock 90%
+            keep_ratio = 0.90
+        elif peak_pnl_pct >= 0.08:  # +8% price move -> lock 85%
+            keep_ratio = 0.85
+        elif peak_pnl_pct >= 0.05:  # +5% price move -> lock 70%
+            keep_ratio = 0.70
+        elif peak_pnl_pct >= 0.025: # +2.5% price move -> lock 50%
+            keep_ratio = 0.40
+        elif peak_pnl_pct >= 0.012: # +1.2% price move -> lock 25%
+            keep_ratio = 0.25
+        
+        if keep_ratio > 0.0:
+            protected_dist = abs(peak_price - entry) * keep_ratio
+            protected_price = entry + protected_dist if side == 'LONG' else entry - protected_dist
+            
             if (side == 'LONG' and protected_price > sl) or (side == 'SHORT' and protected_price < sl):
                 t['sl_price'] = protected_price
                 sl = protected_price
                 t['_ict_emergency_trail_set'] = True
-                protected_pct = ((protected_price - entry) / entry * 100) if side == 'LONG' else ((entry - protected_price) / entry * 100)
-                self.log(f"[EMERGENCY-TRAIL] ICT {symbol}: SL→{protected_price:.6f} (+{protected_pct:.1f}% protected)")
+                self.log(f"[ROI-TRAIL] ICT {symbol}: Peak {peak_pnl_pct*100:.1f}%, SL→{protected_price:.6f} (Locked {keep_ratio*100:.0f}%)")
                 self._force_save()
         
         # ── v2.4: ATR-based Breakeven + Trailing (PM yoksa da koruma) ──

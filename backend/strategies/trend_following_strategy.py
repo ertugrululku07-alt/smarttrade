@@ -306,20 +306,28 @@ class TrendFollowingMixin:
                     sl = be_price
                     self.log(f"[LOCK] {t['symbol']} BE activated @ {be_price:.6f} (peak {peak_pnl_pct*100:.1f}%)")
 
-        # ── Tier 2: Trail — +6% kardan sonra, peak karın %55'ini kilitle ──
-        if peak_pnl_pct >= p['trail_start']:
+        # ── Tier 2: Trail — Dynamic ROI Tiered Trailing ──
+        keep_ratio = 0.0
+        if peak_pnl_pct >= 0.12:    # +12% price move (120% ROI at 10x)
+            keep_ratio = 0.90
+        elif peak_pnl_pct >= 0.08:  # +8% price move
+            keep_ratio = 0.82
+        elif peak_pnl_pct >= 0.05:  # +5% price move
+            keep_ratio = 0.70
+        elif peak_pnl_pct >= 0.03:  # +3% price move
+            keep_ratio = 0.50
+        elif peak_pnl_pct >= p['trail_start']:
+            keep_ratio = p['trail_keep']
+            
+        if keep_ratio > 0.0:
             t['_trend_trail_active'] = True
-            keep = peak_pnl_pct * p['trail_keep']
-            if side == 'LONG':
-                new_sl = entry * (1 + keep)
-                if new_sl > sl:
-                    t['sl_price'] = new_sl
-                    sl = new_sl
-            else:
-                new_sl = entry * (1 - keep)
-                if new_sl < sl:
-                    t['sl_price'] = new_sl
-                    sl = new_sl
+            keep_dist = abs(peak - entry) * keep_ratio
+            new_sl = entry + keep_dist if side == 'LONG' else entry - keep_dist
+            
+            if (side == 'LONG' and new_sl > sl) or (side == 'SHORT' and new_sl < sl):
+                t['sl_price'] = new_sl
+                sl = new_sl
+                self.log(f"[ROI-TRAIL] Trend {t['symbol']}: Peak {peak_pnl_pct*100:.1f}%, SL→{new_sl:.6f} (Locked {keep_ratio*100:.0f}%)")
 
         # ── SL Hit ──
         sl_hit = (side == 'LONG' and current_price <= sl) or \
