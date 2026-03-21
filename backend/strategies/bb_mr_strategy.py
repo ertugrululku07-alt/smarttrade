@@ -248,6 +248,43 @@ class BBMRStrategyMixin:
                     self._force_save()
                     return
 
+            # ── EMERGENCY ROI-based protection (failsafe) ──
+            # If profit > 5% ROI, protect at least breakeven
+            if pnl_pct >= 5.0 and not t.get('_bb_emergency_be_set'):
+                emergency_sl = entry * (1.001 if side == 'LONG' else 0.999)
+                if (side == 'LONG' and emergency_sl > sl) or (side == 'SHORT' and emergency_sl < sl):
+                    t['sl_price'] = emergency_sl
+                    sl = emergency_sl
+                    t['_bb_emergency_be_set'] = True
+                    self.log(f"[EMERGENCY-BE] BB {symbol}: SL→{emergency_sl:.6f} @ +{pnl_pct:.1f}% ROI")
+                    self._force_save()
+
+            # --- Advanced Tiered ROI Profit Protection ---
+            peak_price = max(current_price, t.get('_bb_peak_price', entry)) if side == 'LONG' else min(current_price, t.get('_bb_peak_price', entry))
+            t['_bb_peak_price'] = peak_price
+            peak_pnl_pct = abs(peak_price - entry) / entry
+            
+            keep_ratio = 0.0
+            if peak_pnl_pct >= 0.040:
+                keep_ratio = 0.85
+            elif peak_pnl_pct >= 0.025:
+                keep_ratio = 0.65
+            elif peak_pnl_pct >= 0.015:
+                keep_ratio = 0.45
+            elif peak_pnl_pct >= 0.008:
+                keep_ratio = 0.20
+            
+            if keep_ratio > 0.0:
+                protected_dist = abs(peak_price - entry) * keep_ratio
+                protected_price = entry + protected_dist if side == 'LONG' else entry - protected_dist
+                
+                if (side == 'LONG' and protected_price > sl) or (side == 'SHORT' and protected_price < sl):
+                    t['sl_price'] = protected_price
+                    sl = protected_price
+                    t['_bb_emergency_trail_set'] = True
+                    self.log(f"[ROI-TRAIL] BB {symbol}: Peak {peak_pnl_pct*100:.1f}%, SL→{protected_price:.6f} (Locked {keep_ratio*100:.0f}%)")
+                    self._force_save()
+
             # ── v7.2: ATR-bazlı Breakeven + Trailing ──
             # Eski: margin PnL %2/%4 → leverage 10x ile %0.2/%0.4 fiyat = çok erken
             # Yeni: ATR-bazlı → leverage'den bağımsız, mean reversion'a uygun

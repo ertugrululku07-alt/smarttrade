@@ -97,9 +97,9 @@ class TrendFollowingMixin:
         'min_vol_ratio': 0.8,
         'max_sl_pct': 0.03,
         'swing_lookback': 5,
-        'be_threshold': 0.03,        # +3% price profit → move SL to breakeven
-        'trail_start': 0.05,         # +5% price profit → trailing start (Optimized)
-        'trail_keep': 0.35,          # Lock 35% of peak profit (Optimized)
+        'be_threshold': 0.01,        # +1% price profit (~10% ROI) → move SL to breakeven
+        'trail_start': 0.015,        # +1.5% price profit (~15% ROI) → trailing start
+        'trail_keep': 0.40,          # Lock 40% of peak profit
         'timeout_hours': 72,
         'max_loss_cap': 8.0,         # $8 max loss per trade (Optimized)
         'max_notional': 300.0,
@@ -308,14 +308,14 @@ class TrendFollowingMixin:
 
         # ── Tier 2: Trail — Dynamic ROI Tiered Trailing ──
         keep_ratio = 0.0
-        if peak_pnl_pct >= 0.12:    # +12% price move (120% ROI at 10x)
+        if peak_pnl_pct >= 0.040:   # +4.0% price move (~40% ROI at 10x)
             keep_ratio = 0.90
-        elif peak_pnl_pct >= 0.08:  # +8% price move
-            keep_ratio = 0.82
-        elif peak_pnl_pct >= 0.05:  # +5% price move
-            keep_ratio = 0.70
-        elif peak_pnl_pct >= 0.03:  # +3% price move
-            keep_ratio = 0.50
+        elif peak_pnl_pct >= 0.030: # +3.0% price move (~30% ROI)
+            keep_ratio = 0.85
+        elif peak_pnl_pct >= 0.020: # +2.0% price move (~20% ROI)
+            keep_ratio = 0.65
+        elif peak_pnl_pct >= 0.012: # +1.2% price move (~12% ROI)
+            keep_ratio = 0.35
         elif peak_pnl_pct >= p['trail_start']:
             keep_ratio = p['trail_keep']
             
