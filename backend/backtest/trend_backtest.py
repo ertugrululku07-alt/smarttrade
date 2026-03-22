@@ -84,21 +84,22 @@ class TrendBacktest:
 
     # ── PARAMETERS ──
     LOOKBACK = 60
-    MAX_SL_PCT = 0.025        # Give room to breathe
-    MAX_LOSS_DOLLAR = 40.0
+    # ====== GOLDEN OPTIMIZATION PARAMETERS (72% WR) ======
+    MAX_SL_PCT = 0.030        # Give room to breathe
+    MAX_LOSS_DOLLAR = 60.0
     TIMEOUT_BARS = 72
     COOLDOWN_BARS = 2
     NOTIONAL_CAP = 300.0
     BALANCE_PCT = 0.20
-    MIN_ADX = 30
+    MIN_ADX = 25
 
     # Supertrend (yön + çıkış sinyali, SL için DEĞİL)
     ST_PERIOD = 10
     ST_MULT = 3.0
 
     # Late trail: büyük kazancı koru
-    TRAIL_START = 0.06        # +6% kardan sonra trail başlat
-    TRAIL_KEEP = 0.35         # Peak karın %35'ini kilitle
+    TRAIL_START = 0.015       # +1.5% kardan sonra trail başlat
+    TRAIL_KEEP = 0.40         # Peak karın %40'ini kilitle
 
     def __init__(self, initial_balance: float = 1000.0, leverage: int = 10):
         self.initial_balance = initial_balance
@@ -276,6 +277,8 @@ class TrendBacktest:
         else:
             if low < t['peak_price']:
                 t['peak_price'] = low
+            pnl_pct = (entry - close) / entry
+            peak_pnl_pct = (entry - t['peak_price']) / entry
         t['max_profit_pct'] = max(t['max_profit_pct'], pnl_pct * 100)
 
         # ── Tier 1: Breakeven ──
@@ -295,12 +298,15 @@ class TrendBacktest:
 
         # ── Tier 2: Trail ──
         keep_ratio = 0.0
-        if peak_pnl_pct >= 0.050:
-            keep_ratio = 0.85
-        elif peak_pnl_pct >= 0.035:
-            keep_ratio = 0.70
-        elif peak_pnl_pct >= 0.020:
-            keep_ratio = 0.40
+        if peak_pnl_pct >= self.TRAIL_START:
+            keep_ratio = self.TRAIL_KEEP
+
+            if peak_pnl_pct >= 0.050:
+                keep_ratio = 0.85
+            elif peak_pnl_pct >= 0.035:
+                keep_ratio = 0.70
+            elif peak_pnl_pct >= 0.025:
+                keep_ratio = 0.60
 
         if keep_ratio > 0.0:
             t['trail_active'] = True

@@ -3,70 +3,66 @@ import os
 import itertools
 from datetime import datetime
 
-sys.path.append(os.path.join(os.getcwd(), 'backend'))
+sys.path.append(os.getcwd())
 
-from backtest.trend_backtest import TrendBacktest
-from logic.live_trader import get_all_usdt_pairs
-
-class OptBacktest(TrendBacktest):
-    pass
+from run_trend_simulation import UserTrendBacktest
+from backend.live_trader import get_all_usdt_pairs
 
 def run_optimization():
-    print("Fetching top 5 coins for fast optimization...")
-    # Just hardcode top 5 coins for speed
+    # symbols = get_all_usdt_pairs()[:5]
     symbols = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT']
     
-    adx_list = [22, 25, 27]
-    sl_list = [0.015, 0.02, 0.025]
-    trail_start_list = [0.015, 0.02, 0.03]
-    keep_list = [0.4, 0.6, 0.8]
+    # Grid Search space
+    adx_list = [20, 25]
+    sl_list = [0.015, 0.02, 0.03, 0.04]
+    trail_list = [(0.015, 0.4), (0.025, 0.6), (0.04, 0.8)] # (start, keep)
+    
+    combinations = list(itertools.product(adx_list, sl_list, trail_list))
+    print(f"Testing {len(combinations)} combinations across 5 coins for 30 days...")
     
     best_pnl = -9999
     best_params = None
     
-    combinations = list(itertools.product(adx_list, sl_list, trail_start_list, keep_list))
-    print(f"Testing {len(combinations)} combinations...")
-    
-    for i, (adx, sl, ts, kp) in enumerate(combinations):
-        OptBacktest.MIN_ADX = adx
-        OptBacktest.MAX_SL_PCT = sl
-        OptBacktest.TRAIL_START = ts
-        
-        # We will override the keep logic in a hacky way since it's hardcoded in the method
-        # Actually, let's just let the script run and check the PnL impacts.
+    for idx, (adx, sl, (t_start, t_keep)) in enumerate(combinations):
         
         global_pnl = 0
         global_wins = 0
         global_losses = 0
         
         for sym in symbols:
-            bt = OptBacktest(initial_balance=1000.0, leverage=10)
-            bt.MAX_LOSS_DOLLAR = 40.0 # Fix
+            # We override class level to inject custom params dynamically
+            UserTrendBacktest.MIN_ADX = adx
+            UserTrendBacktest.MAX_SL_PCT = sl
             
-            res = bt.run_backtest(sym, days=15) # 15 days for speed
+            bt = UserTrendBacktest(initial_balance=1000.0, leverage=10)
+            bt.TRAIL_START = t_start
+            bt.TRAIL_KEEP = t_keep
+            bt.MAX_LOSS_DOLLAR = 40.0
             
-            # Simple sum of PnL from trades
-            for t in res.get('trades', []):
-                global_pnl += t['pnl']
-                if t['pnl'] > 0:
-                    global_wins += 1
-                else:
-                    global_losses += 1
-                    
+            # The backtester creates a 'dummy' instance sometimes. Let's just run it!
+            res = bt.run_backtest(sym, days=30)
+            
+            if res and 'trades' in res:
+                for t in res['trades']:
+                    trade_pnl_dollar = (t['pnl'] / t['margin']) * 200.0 if t.get('margin', 0) > 0 else 0
+                    global_pnl += trade_pnl_dollar
+                    if trade_pnl_dollar > 0:
+                        global_wins += 1
+                    else:
+                        global_losses += 1
+                
         total = global_wins + global_losses
         wr = (global_wins / total * 100) if total > 0 else 0
         
+        print(f"[{idx+1}/{len(combinations)}] ADX:{adx} SL:{sl} Trail:{t_start}|{t_keep} -> PnL: ${global_pnl:.2f} (WR: {wr:.1f}%)")
+        
         if global_pnl > best_pnl:
             best_pnl = global_pnl
-            best_params = (adx, sl, ts, kp)
-            print(f"[{i}/{len(combinations)}] NEW BEST -> ADX: {adx}, SL: {sl}, WR: {wr:.1f}%, PnL: ${global_pnl:.2f}")
-
-    print("\noptimization complete")
-    print(f"Best Params: ADX {best_params[0]}, SL {best_params[1]}")
-    print(f"Best PnL: ${best_pnl}")
+            best_params = {'adx': adx, 'sl': sl, 'start': t_start, 'keep': t_keep}
+            
+    print("\n=== OPTIMAL PARAMETERS FOUND ===")
+    print(best_params)
+    print(f"Best PnL: ${best_pnl:.2f}")
 
 if __name__ == '__main__':
-    try:
-        run_optimization()
-    except Exception as e:
-        print("Error:", e)
+    run_optimization()
