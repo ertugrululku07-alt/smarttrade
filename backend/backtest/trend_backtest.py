@@ -84,13 +84,13 @@ class TrendBacktest:
 
     # ── PARAMETERS ──
     LOOKBACK = 60
-    MAX_SL_PCT = 0.020        # Swing SL cap: max %2
-    MAX_LOSS_DOLLAR = 4.0     # Max $4 loss per trade
+    MAX_SL_PCT = 0.025        # Give room to breathe
+    MAX_LOSS_DOLLAR = 40.0
     TIMEOUT_BARS = 72
     COOLDOWN_BARS = 2
     NOTIONAL_CAP = 300.0
     BALANCE_PCT = 0.20
-    MIN_ADX = 20
+    MIN_ADX = 30
 
     # Supertrend (yön + çıkış sinyali, SL için DEĞİL)
     ST_PERIOD = 10
@@ -133,6 +133,7 @@ class TrendBacktest:
         rsi_val = float(df['rsi'].iloc[i])
         ema9 = float(df['ema9'].iloc[i])
         ema21 = float(df['ema21'].iloc[i])
+        ema50 = float(df['ema50'].iloc[i])
         vol_ratio = float(df['vol_ratio_20'].iloc[i])
         macd_hist = float(df['macd_hist'].iloc[i])
 
@@ -158,17 +159,17 @@ class TrendBacktest:
         direction = None
         sl = None
 
-        # LONG: ST flip + EMA bull, or EMA cross + ST bull + MACD
-        if st_flip_bull and ema_bull:
+        # LONG: ST flip + EMA bull + MACD, or EMA cross + ST bull + MACD
+        if st_flip_bull and ema_bull and macd_hist > 0:
             direction = 'LONG'
             sl = self._get_swing_low(df, i, 5)
         elif st_dir == 1 and recent_cross_bull and ema_bull and macd_hist > 0:
             direction = 'LONG'
             sl = self._get_swing_low(df, i, 5)
 
-        # SHORT: ST flip + EMA bear, or EMA cross + ST bear + MACD
+        # SHORT: ST flip + EMA bear + MACD, or EMA cross + ST bear + MACD
         if direction is None:
-            if st_flip_bear and ema_bear:
+            if st_flip_bear and ema_bear and macd_hist < 0:
                 direction = 'SHORT'
                 sl = self._get_swing_high(df, i, 5)
             elif st_dir == -1 and recent_cross_bear and ema_bear and macd_hist < 0:
@@ -183,9 +184,13 @@ class TrendBacktest:
             return None
         if vol_ratio < 0.8:
             return None
-        if direction == 'LONG' and rsi_val > 75:
+        if direction == 'LONG' and rsi_val > 65:
             return None
-        if direction == 'SHORT' and rsi_val < 25:
+        if direction == 'LONG' and close <= ema50:
+            return None
+        if direction == 'SHORT' and rsi_val < 35:
+            return None
+        if direction == 'SHORT' and close >= ema50:
             return None
 
         # ── Swing SL capped at %2 ──
@@ -271,26 +276,40 @@ class TrendBacktest:
         else:
             if low < t['peak_price']:
                 t['peak_price'] = low
-            pnl_pct = (entry - close) / entry
-            peak_pnl_pct = (entry - t['peak_price']) / entry
-
         t['max_profit_pct'] = max(t['max_profit_pct'], pnl_pct * 100)
 
-        # ── Late trail: +6% kardan sonra, peak karın %35'ini kilitle ──
-        # Breakeven DEGİL — sadece büyük kazancı koru
-        if peak_pnl_pct >= self.TRAIL_START:
-            t['trail_active'] = True
-            keep = peak_pnl_pct * self.TRAIL_KEEP
+        # ── Tier 1: Breakeven ──
+        be_thresh = 0.015
+        if peak_pnl_pct >= be_thresh and not t.get('_trend_be_active'):
+            t['_trend_be_active'] = True
             if direction == 'LONG':
-                new_sl = entry * (1 + keep)
-                if new_sl > sl:
-                    t['sl_price'] = new_sl
-                    sl = new_sl
+                be_price = entry * 1.002
+                if be_price > sl:
+                    t['sl_price'] = be_price
+                    sl = be_price
             else:
-                new_sl = entry * (1 - keep)
-                if new_sl < sl:
-                    t['sl_price'] = new_sl
-                    sl = new_sl
+                be_price = entry * 0.998
+                if be_price < sl:
+                    t['sl_price'] = be_price
+                    sl = be_price
+
+        # ── Tier 2: Trail ──
+        keep_ratio = 0.0
+        if peak_pnl_pct >= 0.050:
+            keep_ratio = 0.85
+        elif peak_pnl_pct >= 0.035:
+            keep_ratio = 0.70
+        elif peak_pnl_pct >= 0.020:
+            keep_ratio = 0.40
+
+        if keep_ratio > 0.0:
+            t['trail_active'] = True
+            keep_dist = abs(t['peak_price'] - entry) * keep_ratio
+            new_sl = entry + keep_dist if direction == 'LONG' else entry - keep_dist
+            
+            if (direction == 'LONG' and new_sl > sl) or (direction == 'SHORT' and new_sl < sl):
+                t['sl_price'] = new_sl
+                sl = new_sl
 
         # ── SL hit ──
         if direction == 'LONG':

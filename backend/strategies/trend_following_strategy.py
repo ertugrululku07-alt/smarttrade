@@ -93,15 +93,15 @@ class TrendFollowingMixin:
     _TREND_PARAMS = {
         'st_period': 10,
         'st_multiplier': 3.0,
-        'min_adx': 20,
+        'min_adx': 27,
         'min_vol_ratio': 0.8,
-        'max_sl_pct': 0.03,
+        'max_sl_pct': 0.02,
         'swing_lookback': 5,
         'be_threshold': 0.01,        # +1% price profit (~10% ROI) → move SL to breakeven
         'trail_start': 0.015,        # +1.5% price profit (~15% ROI) → trailing start
         'trail_keep': 0.40,          # Lock 40% of peak profit
         'timeout_hours': 72,
-        'max_loss_cap': 8.0,         # $8 max loss per trade (Optimized)
+        'max_loss_cap': 40.0,        # $40 max loss per trade (allows structural SL to work)
         'max_notional': 300.0,
         'cooldown_hours': 2,
     }
@@ -175,6 +175,7 @@ class TrendFollowingMixin:
 
         ema9 = float(df['ema9'].iloc[i]) if 'ema9' in df.columns else close
         ema21 = float(df['ema21'].iloc[i]) if 'ema21' in df.columns else close
+        ema50 = float(df['ema50'].iloc[i]) if 'ema50' in df.columns else close
 
         st_now = int(st_dir.iloc[i])
         st_prev = int(st_dir.iloc[i - 1])
@@ -218,7 +219,11 @@ class TrendFollowingMixin:
             return None
         if direction == 'LONG' and rsi_val > 70:
             return None
+        if direction == 'LONG' and close <= ema50:
+            return None
         if direction == 'SHORT' and rsi_val < 30:
+            return None
+        if direction == 'SHORT' and close >= ema50:
             return None
 
         # ── Swing SL (capped at %2) ──
