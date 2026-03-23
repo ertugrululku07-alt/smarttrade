@@ -195,6 +195,31 @@ class HybridMomentumStrategyMixin:
                 res = self.check_hybrid_momentum_entry(sym, df, cp)
                 
                 if res:
+                    # ── Real-Time Order Book (BBO) Imbalance Check ──
+                    try:
+                        ob = fetcher.exchange.fetch_order_book(sym, limit=20)
+                        bids = ob.get('bids', [])
+                        asks = ob.get('asks', [])
+                        
+                        bid_vol = sum(b[1] for b in bids)
+                        ask_vol = sum(a[1] for a in asks)
+                        
+                        if bid_vol > 0 and ask_vol > 0:
+                            if res['direction'] == 'LONG':
+                                imbalance = bid_vol / ask_vol
+                                if imbalance < 1.20:
+                                    if hasattr(self, 'log'):
+                                        self.log(f"[OB REJECT] {sym} LONG iptal: Alim Baskisi={imbalance:.2f}x (Min: 1.20x)")
+                                    continue
+                            else:
+                                imbalance = ask_vol / bid_vol
+                                if imbalance < 1.20:
+                                    if hasattr(self, 'log'):
+                                        self.log(f"[OB REJECT] {sym} SHORT iptal: Satis Baskisi={imbalance:.2f}x (Min: 1.20x)")
+                                    continue
+                    except Exception as ob_err:
+                        pass # OB verisi alinamadiysa isleme gecikmesiz devam et
+
                     self._open(
                         symbol=sym,
                         side=res['direction'],
