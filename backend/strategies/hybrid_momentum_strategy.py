@@ -218,6 +218,8 @@ class HybridMomentumStrategyMixin:
                                         self.log(f"[OB REJECT] {sym} SHORT iptal: Satis Baskisi={imbalance:.2f}x (Min: 1.20x)")
                                     continue
                     except Exception as ob_err:
+                        if hasattr(self, 'log'):
+                            self.log(f"  [OB WARN] {sym} Order Book error: {ob_err}")
                         pass # OB verisi alinamadiysa isleme gecikmesiz devam et
 
                     self._open(
@@ -231,6 +233,11 @@ class HybridMomentumStrategyMixin:
                         signal_result=res
                     )
             except Exception as e:
-                pass
+                if hasattr(self, 'log'):
+                    self.log(f"  [SCAN ERROR] {sym}: {e}")
             time.sleep(0.3)
+            
+        if hasattr(self, 'log'):
+            symbols_count = len(getattr(self, 'scanned_symbols', []))
+            self.log(f"[OK] Zero-Lag Hybrid finished scanning {symbols_count} markets.")
 
