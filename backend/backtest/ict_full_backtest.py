@@ -22,8 +22,8 @@ class ICTFullBacktest:
 
     # ── PARAMETERS ──
     LOOKBACK = 80             # Bars for ICT analysis window
-    MIN_RR = 1.45             # Minimum R:R ratio
-    MAX_SL_PCT = 0.025        # Max SL distance 2.5%
+    MIN_RR = 1.0              # Lowered to allow more entries
+    MAX_SL_PCT = 0.030        # 3% max SL for structural room
     MAX_LOSS_DOLLAR = 5.8     # Max loss per trade $
     TIMEOUT_BARS = 48         # Force close after 48h
     COOLDOWN_BARS = 3         # Min bars between trades

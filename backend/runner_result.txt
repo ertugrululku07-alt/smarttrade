@@ -1,0 +1,33 @@
+Running Runner Engine simulation for 10 coins, 180 days
+
+Collected 388 trades. Replaying with portfolio controls...
+
+--- NOTABLE MEGA TRADES ---
+MEGA: BNB/USDT LONG Entry 2025-10-02 Exit 2025-10-08 ROE: +257.3%
+MEGA: BNB/USDT SHORT Entry 2025-10-10 Exit 2025-10-10 ROE: +224.5%
+MEGA: TAO/USDT LONG Entry 2026-01-01 Exit 2026-01-07 ROE: +218.6%
+MEGA: XRP/USDT LONG Entry 2026-01-01 Exit 2026-01-06 ROE: +182.5%
+MEGA: TAO/USDT SHORT Entry 2026-01-29 Exit 2026-01-31 ROE: +156.5%
+MEGA: ETH/USDT SHORT Entry 2026-01-29 Exit 2026-01-31 ROE: +170.1%
+MEGA: BTC/USDT SHORT Entry 2026-02-03 Exit 2026-02-06 ROE: +160.3%
+MEGA: BNB/USDT SHORT Entry 2026-02-04 Exit 2026-02-06 ROE: +168.2%
+
+==================================================
+   LET WINNERS RIDE - RUNNER ENGINE (180 DAYS)   
+==================================================
+Parametreler:
+- Baslangic Bakiyesi: $1000
+- Islem Basina Buyukluk: $75.0 Margin
+- Max Esanli Islem: 3
+- Devre Kesici: 3 Ardisik SL -> 24s Bekleme
+--------------------------------------------------
+Sonuclar:
+- Toplam Islem Sayisi: 269 (Tum Sinyaller: 388)
+- Basarili: 166 / Basarisiz: 103
+- Kazanma Orani: %61.71
+- Maksimum Dusus (Drawdown): %84.07
+--------------------------------------------------
+- Baslangic Bakiyesi: $1000.00
+- Bitis Bakiyesi: $815.17
+- Net Kar/Zarar (PnL): $-184.83 (%-18.48)
+==================================================

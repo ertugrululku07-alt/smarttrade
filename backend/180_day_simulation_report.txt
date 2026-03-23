@@ -1,21 +1,26 @@
 ==================================================
-         SIMULATION REPORT (180 DAYS)          
+   ICT GOLDEN PORTFOLIO SIMULATION (180 DAYS)   
 ==================================================
 Parametreler:
-- Süre: 180 Gün
-- Başlangıç Bakiyesi: $1000
-- Kaldıraç: 10x
-- İşlem Başına Büyüklük: $200 Margin ($2000 Notional)
-- Sembol Sayısı: 10 En Yüksek Hacimli Coin
+- Sure: 180 Gun
+- Baslangic Bakiyesi: $1000
+- Kaldirac: 10x
+- Islem Basina Buyukluk: $100 Margin ($1000 Notional)
+- Sembol Sayisi: 10 En Yuksek Hacimli Coin
+- Max Esanli Islem: 3
+- Devre Kesici: 5 Ardisik SL -> 24s Bekleme
 --------------------------------------------------
-Sonuçlar:
-- Toplam İşlem Sayısı: 2924 (Yetersiz Bakiye Nedeniyle Atlanan: 85)
-- Başarılı İşlem: 754
-- Başarısız İşlem: 2170
-- Kazanma Oranı: %25.79
-- Maksimum Düşüş (Drawdown): %91.77
+Sonuclar:
+- Toplam Islem Sayisi: 1034 (Toplam sinyal: 2209)
+  (Esanlilik Limiti: 645 atlandi)
+  (Devre Kesici: 521 atlandi)
+  (Yetersiz Bakiye: 9 atlandi)
+- Basarili Islem: 462
+- Basarisiz Islem: 572
+- Kazanma Orani: %44.68
+- Maksimum Dusus (Drawdown): %93.12
 --------------------------------------------------
-- Başlangıç Bakiyesi: $1000.00
-- Bitiş Bakiyesi: $543.72
-- Net Kar/Zarar (PnL): $-456.28 (%-45.63)
+- Baslangic Bakiyesi: $1000.00
+- Bitis Bakiyesi: $851.31
+- Net Kar/Zarar (PnL): $-148.69 (%-14.87)
 ==================================================

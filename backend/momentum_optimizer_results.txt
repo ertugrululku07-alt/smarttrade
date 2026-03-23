@@ -1,0 +1,166 @@
+=== MOMENTUM HYBRID OPTIMIZER ===
+Phase 1: Collecting trades from 10 coins, 180 days
+Breakout periods to test: [5, 8, 10, 15]
+Volume thresholds: [0.8, 1.0, 1.2]
+ADX minimums: [15, 20, 25]
+
+Testing 36 entry parameter sets...
+
+--- Entry Set [1/36]: BP=5 VM=0.8 ADX>=15 ---
+  Collected 1515 trades
+  No profitable config found
+
+--- Entry Set [2/36]: BP=5 VM=0.8 ADX>=20 ---
+  Collected 1170 trades
+  No profitable config found
+
+--- Entry Set [3/36]: BP=5 VM=0.8 ADX>=25 ---
+  Collected 831 trades
+  No profitable config found
+
+--- Entry Set [4/36]: BP=5 VM=1.0 ADX>=15 ---
+  Collected 1394 trades
+  No profitable config found
+
+--- Entry Set [5/36]: BP=5 VM=1.0 ADX>=20 ---
+  Collected 1061 trades
+  No profitable config found
+
+--- Entry Set [6/36]: BP=5 VM=1.0 ADX>=25 ---
+  Collected 739 trades
+  BEST: M=$50 C=2 CB=3/12h -> PnL: +6.8% DD: 21.9% WR: 61.3% T: 450
+
+--- Entry Set [7/36]: BP=5 VM=1.2 ADX>=15 ---
+  Collected 1249 trades
+  BEST: M=$50 C=2 CB=3/12h -> PnL: +2.5% DD: 28.9% WR: 61.0% T: 567
+
+--- Entry Set [8/36]: BP=5 VM=1.2 ADX>=20 ---
+  Collected 957 trades
+  BEST: M=$50 C=2 CB=3/12h -> PnL: +8.7% DD: 28.6% WR: 61.2% T: 487
+
+--- Entry Set [9/36]: BP=5 VM=1.2 ADX>=25 ---
+  Collected 653 trades
+  No profitable config found
+
+--- Entry Set [10/36]: BP=8 VM=0.8 ADX>=15 ---
+  Collected 1408 trades
+  No profitable config found
+
+--- Entry Set [11/36]: BP=8 VM=0.8 ADX>=20 ---
+  Collected 1071 trades
+  No profitable config found
+
+--- Entry Set [12/36]: BP=8 VM=0.8 ADX>=25 ---
+  Collected 755 trades
+  No profitable config found
+
+--- Entry Set [13/36]: BP=8 VM=1.0 ADX>=15 ---
+  Collected 1309 trades
+  No profitable config found
+
+--- Entry Set [14/36]: BP=8 VM=1.0 ADX>=20 ---
+  Collected 982 trades
+  No profitable config found
+
+--- Entry Set [15/36]: BP=8 VM=1.0 ADX>=25 ---
+  Collected 678 trades
+  No profitable config found
+
+--- Entry Set [16/36]: BP=8 VM=1.2 ADX>=15 ---
+  Collected 1180 trades
+  No profitable config found
+
+--- Entry Set [17/36]: BP=8 VM=1.2 ADX>=20 ---
+  Collected 893 trades
+  BEST: M=$50 C=3 CB=3/12h -> PnL: +2.6% DD: 38.8% WR: 59.8% T: 595
+
+--- Entry Set [18/36]: BP=8 VM=1.2 ADX>=25 ---
+  Collected 604 trades
+  No profitable config found
+
+--- Entry Set [19/36]: BP=10 VM=0.8 ADX>=15 ---
+  Collected 1350 trades
+  No profitable config found
+
+--- Entry Set [20/36]: BP=10 VM=0.8 ADX>=20 ---
+  Collected 1034 trades
+  No profitable config found
+
+--- Entry Set [21/36]: BP=10 VM=0.8 ADX>=25 ---
+  Collected 721 trades
+  No profitable config found
+
+--- Entry Set [22/36]: BP=10 VM=1.0 ADX>=15 ---
+  Collected 1260 trades
+  No profitable config found
+
+--- Entry Set [23/36]: BP=10 VM=1.0 ADX>=20 ---
+  Collected 951 trades
+  No profitable config found
+
+--- Entry Set [24/36]: BP=10 VM=1.0 ADX>=25 ---
+  Collected 650 trades
+  BEST: M=$50 C=3 CB=5/24h -> PnL: +5.4% DD: 30.8% WR: 62.5% T: 520
+
+--- Entry Set [25/36]: BP=10 VM=1.2 ADX>=15 ---
+  Collected 1142 trades
+  No profitable config found
+
+--- Entry Set [26/36]: BP=10 VM=1.2 ADX>=20 ---
+  Collected 870 trades
+  BEST: M=$50 C=3 CB=3/24h -> PnL: +0.3% DD: 42.7% WR: 60.0% T: 562
+
+--- Entry Set [27/36]: BP=10 VM=1.2 ADX>=25 ---
+  Collected 581 trades
+  BEST: M=$50 C=3 CB=5/24h -> PnL: +8.1% DD: 30.9% WR: 62.7% T: 467
+
+--- Entry Set [28/36]: BP=15 VM=0.8 ADX>=15 ---
+  Collected 1246 trades
+  No profitable config found
+
+--- Entry Set [29/36]: BP=15 VM=0.8 ADX>=20 ---
+  Collected 955 trades
+  No profitable config found
+
+--- Entry Set [30/36]: BP=15 VM=0.8 ADX>=25 ---
+  Collected 665 trades
+  No profitable config found
+
+--- Entry Set [31/36]: BP=15 VM=1.0 ADX>=15 ---
+  Collected 1166 trades
+  No profitable config found
+
+--- Entry Set [32/36]: BP=15 VM=1.0 ADX>=20 ---
+  Collected 887 trades
+  BEST: M=$50 C=3 CB=3/24h -> PnL: +10.2% DD: 38.1% WR: 61.4% T: 573
+
+--- Entry Set [33/36]: BP=15 VM=1.0 ADX>=25 ---
+  Collected 606 trades
+  BEST: M=$50 C=3 CB=3/12h -> PnL: +6.5% DD: 35.5% WR: 61.6% T: 482
+
+--- Entry Set [34/36]: BP=15 VM=1.2 ADX>=15 ---
+  Collected 1071 trades
+  No profitable config found
+
+--- Entry Set [35/36]: BP=15 VM=1.2 ADX>=20 ---
+  Collected 824 trades
+  BEST: M=$50 C=3 CB=3/24h -> PnL: +18.8% DD: 30.4% WR: 61.9% T: 548
+
+--- Entry Set [36/36]: BP=15 VM=1.2 ADX>=25 ---
+  Collected 552 trades
+  BEST: M=$50 C=2 CB=3/24h -> PnL: +0.6% DD: 28.7% WR: 60.7% T: 361
+
+
+============================================================
+  OPTIMAL MOMENTUM HYBRID CONFIGURATION
+============================================================
+Entry: BP=5 VM=1.0 ADX>=25
+Portfolio: M=$50 C=2 CB=3/12h
+----------------------------------------
+Net PnL:       +6.79%
+Max Drawdown:  21.86%
+Win Rate:      61.33%
+Total Trades:  450
+Wins/Losses:   276/174
+Score:         6.79
+============================================================

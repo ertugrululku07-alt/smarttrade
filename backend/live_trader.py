@@ -19,6 +19,7 @@ from strategies.bb_mr_strategy import BBMRStrategyMixin
 from strategies.ict_smc_strategy import ICTSMCStrategyMixin
 from strategies.vwap_scalping_strategy import VWAPScalpingMixin
 from strategies.trend_following_strategy import TrendFollowingMixin
+from strategies.hybrid_momentum_strategy import HybridMomentumStrategyMixin
 
 SCAN_SYMBOLS = [
     "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT",
@@ -76,7 +77,7 @@ def get_all_usdt_pairs():
         return SCAN_SYMBOLS
 
 
-class LivePaperTrader(TrendFollowingMixin, VWAPScalpingMixin, ICTSMCStrategyMixin):
+class LivePaperTrader(TrendFollowingMixin, VWAPScalpingMixin, ICTSMCStrategyMixin, HybridMomentumStrategyMixin):
     """
     Background'da calisan Otonom Paper Trading (Sanal Bakiye) servisi.
     """
@@ -135,9 +136,10 @@ class LivePaperTrader(TrendFollowingMixin, VWAPScalpingMixin, ICTSMCStrategyMixi
 
         # ── Strategy Enable/Disable ──
         self._strategy_enabled = {
-            'bb_mr': True,
-            'ict_smc': True,
-            'trend_v4': True,
+            'bb_mr': False,
+            'ict_smc': False,
+            'trend_v4': False,
+            'hybrid_momentum': True
         }
         self._active_profile = 'custom'
 
@@ -245,6 +247,14 @@ class LivePaperTrader(TrendFollowingMixin, VWAPScalpingMixin, ICTSMCStrategyMixi
             saved_enabled = state.get('strategy_enabled', {})
             if saved_enabled:
                 self._strategy_enabled.update(saved_enabled)
+                
+            # FORCE NEW STRATEGY (Override old JSON states)
+            self._strategy_enabled['bb_mr'] = False
+            self._strategy_enabled['ict_smc'] = False
+            self._strategy_enabled['trend_v4'] = False
+            self._strategy_enabled['vwap_scalp'] = False
+            self._strategy_enabled['hybrid_momentum'] = True
+            
             self._active_profile = state.get('active_profile', 'custom')
             saved_symbols = state.get('scanned_symbols', [])
             if isinstance(saved_symbols, list) and len(saved_symbols) >= 5:
@@ -623,6 +633,10 @@ class LivePaperTrader(TrendFollowingMixin, VWAPScalpingMixin, ICTSMCStrategyMixi
             elif t.get('strategy', '') == 'trend_v4.4':
                 # Trend Following → Late trail + SL + max loss
                 self._check_trend_exit(t, price)
+            elif t.get('strategy', '') == 'hybrid_momentum':
+                res = self._check_hybrid_momentum_exit(t, price)
+                if res is not None:
+                    self._close_all_locked([t], t['symbol'], res[1], res[0])
             else:
                 # Legacy trades → PositionManager
                 self._check_v3_manager(t, price)
@@ -1070,6 +1084,11 @@ class LivePaperTrader(TrendFollowingMixin, VWAPScalpingMixin, ICTSMCStrategyMixi
                 if self._strategy_enabled.get('trend_v4', True):
                     self.log(f"[SEARCH] Trend v4.4 scanning {len(self.scanned_symbols)} markets...")
                     self._trend_scan(fetcher)
+                    
+                # ── Strategy 4: Zero-Lag Hybrid Momentum ──
+                if self._strategy_enabled.get('hybrid_momentum', True):
+                    self.log(f"[SEARCH] Zero-Lag Hybrid scanning {len(self.scanned_symbols)} markets...")
+                    self._hybrid_scan(fetcher)
 
             except Exception as e:
                 err = str(e).lower()

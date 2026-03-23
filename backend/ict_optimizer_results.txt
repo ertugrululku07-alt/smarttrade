@@ -1,0 +1,103 @@
+Phase 1: Fetching trade data for 10 coins over 180 days...
+  [1/10] BTC/USDT...
+  [2/10] ETH/USDT...
+  [3/10] NIGHT/USDT...
+  [4/10] SOL/USDT...
+  [5/10] XRP/USDT...
+  [6/10] DOGE/USDT...
+  [7/10] BNB/USDT...
+  [8/10] TAO/USDT...
+  [9/10] TRX/USDT...
+  [10/10] ZEC/USDT...
+
+Phase 1 complete: 2378 total trades collected.
+
+Phase 2: Testing 72 portfolio configurations...
+
+[  1/72] M=$ 30 C=1 CB=3/6h -> PnL:   +11.1% DD:  12.7% WR: 46.9% Trades:  544
+[  2/72] M=$ 30 C=1 CB=3/12h -> PnL:   +20.8% DD:   9.3% WR: 48.4% Trades:  521
+[  3/72] M=$ 30 C=1 CB=3/24h -> PnL:   +15.4% DD:   9.4% WR: 48.4% Trades:  459
+[  4/72] M=$ 30 C=1 CB=5/6h -> PnL:   +15.8% DD:  10.7% WR: 47.3% Trades:  582
+[  5/72] M=$ 30 C=1 CB=5/12h -> PnL:    +7.4% DD:  12.9% WR: 46.3% Trades:  570
+[  6/72] M=$ 30 C=1 CB=5/24h -> PnL:    +9.9% DD:  11.9% WR: 46.3% Trades:  544
+[  7/72] M=$ 30 C=2 CB=3/6h -> PnL:   +41.7% DD:  21.9% WR: 47.8% Trades:  953 * OK
+[  8/72] M=$ 30 C=2 CB=3/12h -> PnL:   +34.8% DD:  21.5% WR: 47.4% Trades:  856
+[  9/72] M=$ 30 C=2 CB=3/24h -> PnL:   +36.5% DD:  13.3% WR: 48.3% Trades:  716
+[ 10/72] M=$ 30 C=2 CB=5/6h -> PnL:   +35.2% DD:  15.7% WR: 47.2% Trades: 1024
+[ 11/72] M=$ 30 C=2 CB=5/12h -> PnL:   +39.3% DD:  14.7% WR: 47.8% Trades:  990
+[ 12/72] M=$ 30 C=2 CB=5/24h -> PnL:   +44.4% DD:  12.5% WR: 48.3% Trades:  916 * OK
+[ 13/72] M=$ 30 C=3 CB=3/6h -> PnL:   +55.2% DD:  21.6% WR: 47.8% Trades: 1256 * OK
+[ 14/72] M=$ 30 C=3 CB=3/12h -> PnL:   +38.7% DD:  23.4% WR: 47.3% Trades: 1104
+[ 15/72] M=$ 30 C=3 CB=3/24h -> PnL:   +50.3% DD:  19.5% WR: 49.4% Trades:  917 * OK
+[ 16/72] M=$ 30 C=3 CB=5/6h -> PnL:   +58.2% DD:  21.6% WR: 47.7% Trades: 1375 * OK
+[ 17/72] M=$ 30 C=3 CB=5/12h -> PnL:   +52.3% DD:  19.3% WR: 47.5% Trades: 1307 * OK
+[ 18/72] M=$ 30 C=3 CB=5/24h -> PnL:   +59.9% DD:  16.8% WR: 48.6% Trades: 1178 * OK
+[ 19/72] M=$ 50 C=1 CB=3/6h -> PnL:   +18.5% DD:  19.5% WR: 46.9% Trades:  544
+[ 20/72] M=$ 50 C=1 CB=3/12h -> PnL:   +34.7% DD:  14.2% WR: 48.4% Trades:  521
+[ 21/72] M=$ 50 C=1 CB=3/24h -> PnL:   +25.7% DD:  14.2% WR: 48.4% Trades:  459
+[ 22/72] M=$ 50 C=1 CB=5/6h -> PnL:   +26.3% DD:  16.5% WR: 47.3% Trades:  582
+[ 23/72] M=$ 50 C=1 CB=5/12h -> PnL:   +12.3% DD:  20.5% WR: 46.3% Trades:  570
+[ 24/72] M=$ 50 C=1 CB=5/24h -> PnL:   +16.6% DD:  18.7% WR: 46.3% Trades:  544
+[ 25/72] M=$ 50 C=2 CB=3/6h -> PnL:   +69.5% DD:  29.9% WR: 47.8% Trades:  953 ** GOOD
+[ 26/72] M=$ 50 C=2 CB=3/12h -> PnL:   +58.0% DD:  30.5% WR: 47.4% Trades:  856 * OK
+[ 27/72] M=$ 50 C=2 CB=3/24h -> PnL:   +60.9% DD:  19.9% WR: 48.3% Trades:  716 ** GOOD
+[ 28/72] M=$ 50 C=2 CB=5/6h -> PnL:   +58.7% DD:  22.5% WR: 47.2% Trades: 1024 * OK
+[ 29/72] M=$ 50 C=2 CB=5/12h -> PnL:   +65.5% DD:  21.0% WR: 47.8% Trades:  990 ** GOOD
+[ 30/72] M=$ 50 C=2 CB=5/24h -> PnL:   +74.0% DD:  17.6% WR: 48.3% Trades:  916 ** GOOD
+[ 31/72] M=$ 50 C=3 CB=3/6h -> PnL:   +92.0% DD:  30.7% WR: 47.8% Trades: 1256 ** GOOD
+[ 32/72] M=$ 50 C=3 CB=3/12h -> PnL:   +64.6% DD:  33.2% WR: 47.3% Trades: 1104 ** GOOD
+[ 33/72] M=$ 50 C=3 CB=3/24h -> PnL:   +83.8% DD:  30.1% WR: 49.4% Trades:  917 ** GOOD
+[ 34/72] M=$ 50 C=3 CB=5/6h -> PnL:   +97.0% DD:  30.4% WR: 47.7% Trades: 1375 ** GOOD
+[ 35/72] M=$ 50 C=3 CB=5/12h -> PnL:   +87.2% DD:  27.1% WR: 47.5% Trades: 1307 *** TARGET HIT!
+[ 36/72] M=$ 50 C=3 CB=5/24h -> PnL:   +99.8% DD:  23.6% WR: 48.6% Trades: 1178 *** TARGET HIT!
+[ 37/72] M=$ 75 C=1 CB=3/6h -> PnL:   +27.8% DD:  26.7% WR: 46.9% Trades:  544
+[ 38/72] M=$ 75 C=1 CB=3/12h -> PnL:   +52.1% DD:  19.4% WR: 48.4% Trades:  521 * OK
+[ 39/72] M=$ 75 C=1 CB=3/24h -> PnL:   +38.5% DD:  19.2% WR: 48.4% Trades:  459
+[ 40/72] M=$ 75 C=1 CB=5/6h -> PnL:   +39.4% DD:  22.8% WR: 47.3% Trades:  582
+[ 41/72] M=$ 75 C=1 CB=5/12h -> PnL:   +18.4% DD:  29.3% WR: 46.3% Trades:  570
+[ 42/72] M=$ 75 C=1 CB=5/24h -> PnL:   +24.8% DD:  26.2% WR: 46.3% Trades:  544
+[ 43/72] M=$ 75 C=2 CB=3/6h -> PnL:  +104.2% DD:  36.6% WR: 47.8% Trades:  953 ** GOOD
+[ 44/72] M=$ 75 C=2 CB=3/12h -> PnL:   +87.0% DD:  38.6% WR: 47.4% Trades:  856 ** GOOD
+[ 45/72] M=$ 75 C=2 CB=3/24h -> PnL:   +91.3% DD:  26.4% WR: 48.3% Trades:  716 *** TARGET HIT!
+[ 46/72] M=$ 75 C=2 CB=5/6h -> PnL:   +88.0% DD:  28.8% WR: 47.2% Trades: 1024 *** TARGET HIT!
+[ 47/72] M=$ 75 C=2 CB=5/12h -> PnL:   +98.2% DD:  26.8% WR: 47.8% Trades:  990 *** TARGET HIT!
+[ 48/72] M=$ 75 C=2 CB=5/24h -> PnL:  +111.0% DD:  21.9% WR: 48.3% Trades:  916 *** TARGET HIT!
+[ 49/72] M=$ 75 C=3 CB=3/6h -> PnL:  +138.0% DD:  38.8% WR: 47.8% Trades: 1256 ** GOOD
+[ 50/72] M=$ 75 C=3 CB=3/12h -> PnL:   +96.8% DD:  41.9% WR: 47.3% Trades: 1104 * OK
+[ 51/72] M=$ 75 C=3 CB=3/24h -> PnL:  +125.7% DD:  41.3% WR: 49.4% Trades:  917 * OK
+[ 52/72] M=$ 75 C=3 CB=5/6h -> PnL:  +145.6% DD:  38.1% WR: 47.7% Trades: 1375 ** GOOD
+[ 53/72] M=$ 75 C=3 CB=5/12h -> PnL:  +130.8% DD:  34.0% WR: 47.5% Trades: 1307 ** GOOD
+[ 54/72] M=$ 75 C=3 CB=5/24h -> PnL:  +149.7% DD:  29.6% WR: 48.6% Trades: 1178 *** TARGET HIT!
+[ 55/72] M=$100 C=1 CB=3/6h -> PnL:   +37.1% DD:  32.8% WR: 46.9% Trades:  544
+[ 56/72] M=$100 C=1 CB=3/12h -> PnL:   +69.4% DD:  23.8% WR: 48.4% Trades:  521 ** GOOD
+[ 57/72] M=$100 C=1 CB=3/24h -> PnL:   +51.4% DD:  23.3% WR: 48.4% Trades:  459 * OK
+[ 58/72] M=$100 C=1 CB=5/6h -> PnL:   +52.6% DD:  28.1% WR: 47.3% Trades:  582 * OK
+[ 59/72] M=$100 C=1 CB=5/12h -> PnL:   +24.5% DD:  37.1% WR: 46.3% Trades:  570
+[ 60/72] M=$100 C=1 CB=5/24h -> PnL:   +33.1% DD:  32.7% WR: 46.3% Trades:  544
+[ 61/72] M=$100 C=2 CB=3/6h -> PnL:  +139.0% DD:  41.2% WR: 47.8% Trades:  953 * OK
+[ 62/72] M=$100 C=2 CB=3/12h -> PnL:  +116.0% DD:  44.5% WR: 47.4% Trades:  856 * OK
+[ 63/72] M=$100 C=2 CB=3/24h -> PnL:  +121.8% DD:  31.5% WR: 48.3% Trades:  716 ** GOOD
+[ 64/72] M=$100 C=2 CB=5/6h -> PnL:  +117.4% DD:  33.5% WR: 47.2% Trades: 1024 ** GOOD
+[ 65/72] M=$100 C=2 CB=5/12h -> PnL:  +130.9% DD:  31.1% WR: 47.8% Trades:  990 ** GOOD
+[ 66/72] M=$100 C=2 CB=5/24h -> PnL:  +148.0% DD:  25.1% WR: 48.3% Trades:  916 *** TARGET HIT!
+[ 67/72] M=$100 C=3 CB=3/6h -> PnL:  +184.0% DD:  44.8% WR: 47.8% Trades: 1256 * OK
+[ 68/72] M=$100 C=3 CB=3/12h -> PnL:  +129.1% DD:  48.2% WR: 47.3% Trades: 1104 * OK
+[ 69/72] M=$100 C=3 CB=3/24h -> PnL:  +167.6% DD:  50.8% WR: 49.4% Trades:  917 * OK
+[ 70/72] M=$100 C=3 CB=5/6h -> PnL:  +194.1% DD:  43.7% WR: 47.7% Trades: 1375 * OK
+[ 71/72] M=$100 C=3 CB=5/12h -> PnL:  +174.4% DD:  39.0% WR: 47.5% Trades: 1307 ** GOOD
+[ 72/72] M=$100 C=3 CB=5/24h -> PnL:  +199.6% DD:  33.9% WR: 48.6% Trades: 1178 ** GOOD
+
+============================================================
+  OPTIMAL PORTFOLIO CONFIGURATION FOUND
+============================================================
+Margin per trade: $100
+Max concurrent:   3
+Circuit breaker:  5 SL -> 24h pause
+---------------------------------
+Net PnL:          +199.58%
+Max Drawdown:     33.93%
+Win Rate:         48.56%
+Total Trades:     1178
+Wins/Losses:      572/606
+Score:            154.91
+============================================================

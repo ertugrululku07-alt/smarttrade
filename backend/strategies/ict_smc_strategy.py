@@ -1502,27 +1502,40 @@ class ICTSMCStrategyMixin:
             t['_ict_peak_price'] = peak_price
             peak_profit_atr = (entry - peak_price) / atr_val
 
-            if peak_profit_atr >= 1.5 and not t.get('_ict_be_set'):
-                be_sl = entry - 0.3 * atr_val
-                if be_sl < sl:
+            peak_pct = abs(t['_ict_peak_price'] - entry) / entry
+            
+            # ── Tier 1: Breakeven ──
+            be_thresh = 0.015
+            if peak_pct >= be_thresh and not t.get('_ict_be_active'):
+                t['_ict_be_active'] = True
+                if side == 'LONG':
+                    be_sl = max(sl, entry * 1.002)
                     t['sl_price'] = be_sl
                     sl = be_sl
-                    t['_ict_be_set'] = True
-                    self.log(f"[BE] ICT {symbol}: SL→BE {be_sl:.6f} (peak {peak_profit_atr:.1f} ATR)")
-                    self._force_save()
                 else:
-                    self.log(f"[BE-SKIP] ICT {symbol}: be_sl {be_sl:.6f} >= current_sl {sl:.6f}")
+                    be_sl = min(sl, entry * 0.998)
+                    t['sl_price'] = be_sl
+                    sl = be_sl
+                self.log(f"[BE] ICT {symbol}: SL→BE {be_sl:.6f} (peak +{peak_pct*100:.1f}%)")
+                self._force_save()
 
-            if peak_profit_atr >= 3.0:
-                trail_sl = peak_price + 1.5 * atr_val
-                if trail_sl < sl:
-                    t['sl_price'] = trail_sl
-                    sl = trail_sl
-                    self.log(f"[TRAIL] ICT {symbol}: SL→{trail_sl:.6f} (peak {peak_price:.6f})")
-                else:
-                    if not t.get('_trail_skip_logged'):
-                        t['_trail_skip_logged'] = True
-                        self.log(f"[TRAIL-SKIP] ICT {symbol}: trail_sl {trail_sl:.6f} >= current_sl {sl:.6f}")
+            # ── Tier 2: Dynamic Trailing Stop ──
+            keep_ratio = 0.0
+            if peak_pct >= 0.015:
+                keep_ratio = 0.40
+                if peak_pct >= 0.050: keep_ratio = 0.85
+                elif peak_pct >= 0.035: keep_ratio = 0.70
+                elif peak_pct >= 0.025: keep_ratio = 0.60
+                    
+            if keep_ratio > 0.0:
+                keep_dist = abs(t['_ict_peak_price'] - entry) * keep_ratio
+                new_sl = entry + keep_dist if side == 'LONG' else entry - keep_dist
+                
+                if (side == 'LONG' and new_sl > sl) or (side == 'SHORT' and new_sl < sl):
+                    t['sl_price'] = new_sl
+                    sl = new_sl
+                    self.log(f"[TRAIL] ICT {symbol}: SL→{new_sl:.6f} (lock {keep_ratio*100:.0f}%)")
+                    self._force_save()
 
         hit_sl = (side == 'LONG' and current_price <= sl) or \
                  (side == 'SHORT' and current_price >= sl)
